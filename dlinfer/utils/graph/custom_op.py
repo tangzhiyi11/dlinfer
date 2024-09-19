@@ -15,7 +15,7 @@ def register_custom_op(
     qualname: str,
     shape_param_keys: Optional[Sequence[str]] = None,
     impl_abstract_func: Optional[Callable] = None,
-    disable=True,  # disable graph custom op registration for now
+    disable=False,  # disable graph custom op registration for now
 ) -> Callable:
     def inner_func(func: Callable):
         if disable:
