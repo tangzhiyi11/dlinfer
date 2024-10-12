@@ -217,12 +217,6 @@ class AtenToAtbTransformer(SingleOpTransformer):
             (value_cache_shape[0], value_cache_shape[1], value_shape[-2], value_shape[-1])))
         out = self.get_proxy(atb_op.ReshapeAndCache,
             (key, value, key_cache_reshaped, value_cache_reshaped, kv_indices))
-        # key_cache_out = self.get_proxy(atb_op.View, (key_cache,
-        #     (key_cache_shape[0], key_cache_shape[1], key_shape[-2] * key_shape[-1])))
-        # value_cache_out = self.get_proxy(atb_op.View, (value_cache,
-        #     (value_cache_shape[0], value_cache_shape[1], value_shape[-2] * value_shape[-1])))
-        inplace_1 = self.get_proxy(atb_op.Inplace, (out, key_cache_reshaped, 0))
-        inplace_2 = self.get_proxy(atb_op.Inplace, (out, value_cache_reshaped, 1))
         return out
 
     @register_conversion("torch.ops.dlinfer.paged_decode_attention.default")
@@ -238,7 +232,6 @@ class AtenToAtbTransformer(SingleOpTransformer):
             key_cache = self.get_proxy(atb_op.View, (key_cache, (k_shape[0], k_shape[1], kv_head_num, -1)))
             value_cache = self.get_proxy(atb_op.View, (value_cache, (v_shape[0], v_shape[1], kv_head_num, -1)))
         out = self.get_proxy(atb_op.PagedAttention, (query, key_cache, value_cache, block_table, kv_seq_len, None, q_head_num, kv_head_num, scale))
-        # inplace = self.get_proxy(atb_op.Inplace, (out, query))
         return out
 
     @register_conversion(torch.ops.atb.add_rms_norm.default)
@@ -247,8 +240,6 @@ class AtenToAtbTransformer(SingleOpTransformer):
         norm = self.get_proxy(atb_op.RmsNorm, (add, gamma, epsilon))
         graph = self.get_proxy(atb_op.Graph, (add, norm), {'output': [norm, add], 'infer_shape': {"type": "equal", "value": [(0, 0), (0, 0)]}})
         return self.get_proxy(atb_op.Tuple, (norm, add))
-        # out = self.get_proxy(atb_op.AddRmsNorm, (x1, x2, gamma, epsilon))
-        return out
 
     @register_conversion(torch.ops.aten.t.default)
     def t(self, input):
@@ -276,16 +267,6 @@ class AtenToAtbTransformer(SingleOpTransformer):
         split = self.get_proxy(atb_op.SplitSharing, (x, size, dim))
         # graph = self.get_proxy(atb_op.Graph, (split,), {'output': split})
         return split
-
-    @register_conversion(torch.ops.atb.mlp_gate_v2.default)
-    def mlp_gate_v2(self, input, up, gate, down):
-        # out = self.get_proxy(atb_op.MlpGateV2, (input, up, gate, down))
-        # return out
-        # input: [batch, seqLen, hiddenSize], half
-        # up: [hiddenSize, ffnHiddenSize], half
-        # gate: [hiddenSize, ffnHiddenSize], half
-        # down: [ffnHiddenSize, hiddenSize], half
-        pass
 
     @register_conversion("torch.ops.dlinfer.silu_and_mul.default")
     def silu_and_mul(self, gate_up, dim):

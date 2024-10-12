@@ -180,6 +180,14 @@ void DICPModel::CreateSingleOperation(const nlohmann::json& paramJson,
       count++;
     }
   }
+  bool hasInplaceOutputs = getValue<bool>(paramJson, "hasInplaceOutputs");
+  if (hasInplaceOutputs) {
+    for (const auto& inplaceTensors : paramJson["inplaceOutputs"]) {
+      auto outputIdx = getValue<int32_t>(inplaceTensors, "output_index");
+      auto inputIdx = getValue<int32_t>(inplaceTensors, "input_index");
+      node.inplaceIndices[outputIdx] = inputIdx;
+    }
+  }
 }
 
 void DICPModel::CreateGraphOperation(const nlohmann::json& paramJson,
@@ -367,6 +375,14 @@ void DICPModel::CreateGraphOperation(const nlohmann::json& paramJson,
     } else {
       node.outTensors.push_back(
           &graph_.internalTensors[internalTensorsMap_[t]]);
+    }
+  }
+  bool hasInplaceOutputs = getValue<bool>(paramJson, "hasInplaceOutputs");
+  if (hasInplaceOutputs) {
+    for (const auto& inplaceTensors : paramJson["inplaceOutputs"]) {
+      auto outputIdx = getValue<int32_t>(inplaceTensors, "output_index");
+      auto inputIdx = getValue<int32_t>(inplaceTensors, "input_index");
+      node.inplaceIndices[outputIdx] = inputIdx;
     }
   }
 }

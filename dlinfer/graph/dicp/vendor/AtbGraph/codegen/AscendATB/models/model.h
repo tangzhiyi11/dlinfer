@@ -13,6 +13,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "log.h"
@@ -43,6 +44,7 @@ class Model {
     atb::SVector<ReshapeFunc> inTensorReshapeFuncs;
     atb::SVector<TensorType> inTensorTypes;
     atb::SVector<TensorType> outTensorTypes;
+    std::unordered_map<int, int> inplaceIndices;
     uint64_t workspaceSize = 0;
     void* workspace = nullptr;
   };

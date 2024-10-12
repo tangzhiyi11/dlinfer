@@ -159,6 +159,9 @@ class AtbOverrides:
         op.set_param(param)
         op.set_input([key, value, key_cache, value_cache, kv_indices])
         op.set_output([f"{name}__0", f"{name}__1"])
+        op.has_inplace_output = True
+        op.add_inplace_output(0, 2)
+        op.add_inplace_output(1, 3)
         return op
 
     def PagedAttention(name, query, key_cache, value_cache, block_table, context_len, mask, q_head_num, kv_head_num, scale):
