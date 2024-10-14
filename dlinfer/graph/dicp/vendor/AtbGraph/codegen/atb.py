@@ -4,22 +4,11 @@ from typing import Any, List
 from torch.fx.node import Node
 
 from torch._inductor.utils import IndentedBuffer
-from dlinfer.graph.dicp.dynamo_bridge.utils import symint_in_shape, process_sym_name
-from dlinfer.graph.dicp.vendor.AtbGraph.codegen.utils import (
-    get_ascend_dtype,
-    get_ascend_dtype_num,
-    get_torch_dtype,
-    AclFormat,
-    AclDataType,
-    get_acl_dtype,
-    remove_duplicates,
-)
+from dlinfer.graph.dicp.dynamo_bridge.utils import symint_in_shape
 from dlinfer.graph.dicp.vendor.AtbGraph.codegen.atb_graph import Graph, parse_graph
 from dlinfer.graph.dicp.vendor.AtbGraph.codegen.atb_op import AtbOverrides
 
 graph_id = 0
-
-precision_check = bool(os.environ.get("DICP_ASCEND_PRECISION_CHECK", False))
 
 
 def get_graph_id():
