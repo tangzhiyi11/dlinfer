@@ -406,7 +406,7 @@ atb::Tensor Model::MallocInternalTensor(atb::Tensor* outTensor, size_t nodeId,
       return **iter;
     }
     for (auto& it : internalTensors_) {
-      if (it.second) {  // Tensor被使用中，不能被分配其他Op
+      if (it.second) {
         continue;
       }
 
@@ -430,7 +430,7 @@ void Model::FreeInternalTensor(void* tensorDeviceData) {
   if (GetConfig().ReuseInternalTensor()) {
     for (auto& it : internalTensors_) {
       if (it.first.deviceData == tensorDeviceData) {
-        it.second = false;  // Tensor被释放，可以被后来者使用
+        it.second = false;
         DICP_LOG(INFO) << modelName_ << " free internal tensor";
         break;
       }

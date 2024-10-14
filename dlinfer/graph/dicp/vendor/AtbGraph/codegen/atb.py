@@ -7,7 +7,6 @@ from torch._inductor.utils import IndentedBuffer
 from dlinfer.graph.dicp.dynamo_bridge.utils import symint_in_shape, process_sym_name
 from dlinfer.graph.dicp.vendor.AtbGraph.codegen.utils import (
     get_ascend_dtype,
-    get_cpp_dtype,
     get_ascend_dtype_num,
     get_torch_dtype,
     AclFormat,

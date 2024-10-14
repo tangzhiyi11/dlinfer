@@ -35,9 +35,7 @@ class DICPModel : public Model {
   void CreateGraphOperation(const nlohmann::json& paramJson, Node& node);
   atb::Status ParseParam(const std::string& param) override;
   atb::Status BindParamHostTensor(uint32_t nodeId) override;
-  // atb::Status ParseParam(const std::string &param) override;
   std::vector<atb::TensorDesc> outputTensorDescs_;
-  // atb::Status BindParamHostTensor(uint32_t nodeId) override;
   std::unordered_map<std::string, int> tensorsMap_;
   std::unordered_map<std::string, int> inputTensorsMap_;
   std::unordered_map<std::string, int> outputTensorsMap_;

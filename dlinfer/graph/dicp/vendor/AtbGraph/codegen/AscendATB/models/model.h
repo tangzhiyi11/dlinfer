@@ -40,7 +40,6 @@ class Model {
     std::vector<atb::Tensor*> inTensors;
     std::vector<atb::Tensor*> outTensors;
     atb::VariantPack variantPack;
-    // std::vector<torch::Tensor> torchTensors;
     atb::SVector<ReshapeFunc> inTensorReshapeFuncs;
     atb::SVector<TensorType> inTensorTypes;
     atb::SVector<TensorType> outTensorTypes;
