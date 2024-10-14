@@ -357,7 +357,7 @@ class AtbCodegen(torch.fx.Interpreter):
                 self.expand_symint(cur, k)
                 self.remove_symint(cur[k])
 
-    def gen_graph_json(self):        
+    def gen_graph_json(self):
         return self.atb_graph.to_json()
 
     def gen_compile_graph_code(self):

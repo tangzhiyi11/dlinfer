@@ -243,7 +243,15 @@ void Model::BuildNodeVariantPack(int nodeId) {
   DICP_LOG_IF(st != 0, FATAL) << modelName_ << " nodes[" << nodeId << "] "
                               << " infer shape fail, error code: " << st;
 
+  bool hasInplaceOutputs = node.inplaceIndices.size() > 0;
   for (size_t i = 0; i < node.outTensors.size(); ++i) {
+    if (hasInplaceOutputs && node.inplaceIndices.count(i) > 0) {
+      auto inputIdx = node.inplaceIndices[i];
+      node.variantPack.outTensors.at(i) = *node.inTensors.at(inputIdx);
+      *node.outTensors.at(i) = node.variantPack.outTensors.at(i);
+      continue;
+    }
+
     node.variantPack.outTensors.at(i) = *node.outTensors.at(i);
     if (node.outTensorTypes.at(i) == Model::INTERMEDIATE_TENSOR) {
       node.variantPack.outTensors.at(i) = MallocInternalTensor(

@@ -21,8 +21,6 @@ class AtbCompileJob(DeviceCompileJob):
             # 'local_rank' + str(self._local_rank)
             extra= 'local_rank' + str(self._local_rank)
         )
-        self._output_graph_path = self._input_path[:-5] + '/graph'
-
 
     def _compile(self):
         try:

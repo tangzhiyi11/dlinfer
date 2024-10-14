@@ -41,6 +41,11 @@ class Operation:
         self.has_reshape_inputs = False
         self.reshape_inputs = []
         self.special_constants_map = {}
+        self.has_inplace_output = False
+        self.inplace_outputs = []
+    
+    def add_inplace_output(self, output_idx, input_idx):
+        self.inplace_outputs.append({"output_index": int(output_idx), "input_index": int(input_idx)})
     
     def set_input(self, x):
         self.inputs = x
@@ -78,6 +83,8 @@ class Operation:
                 "hostInputNames": self.host_inputs,
                 "hasReshapeInputs": self.has_reshape_inputs,
                 "reshapeInputs": self.reshape_inputs,
+                "hasInplaceOutputs": self.has_inplace_output,
+                "inplaceOutputs": self.inplace_outputs,
             },
         }
         return node
@@ -134,6 +141,11 @@ class GraphOpearation(Operation):
         self.host_inputs = []
         self.has_infer_shape = False
         self.infer_shape = ''
+        self.has_inplace_output = False
+        self.inplace_outputs = []
+
+    def add_inplace_output(self, output_idx, input_idx):
+        self.inplace_outputs.append({"output_index": int(output_idx), "input_index": int(input_idx)})
     
     def set_node_names(self, x):
         self.node_names = x
@@ -178,6 +190,8 @@ class GraphOpearation(Operation):
             "hostInputNames": self.host_inputs,
             "hasInferShape": self.has_infer_shape,
             "inferShape": self.infer_shape,
+            "hasInplaceOutputs": self.has_inplace_output,
+            "inplaceOutputs": self.inplace_outputs,
             }
         }
         return graph
@@ -465,6 +479,7 @@ def parse_graph(graph: Graph,
         graph_outputs = []
         graph_hosts = []
         graph_internals = []
+        inplace_output_tensors = {}
         for node_name in graph_node.node_names:
             if node_name not in graph.nodes.keys():
                 continue
@@ -480,6 +495,12 @@ def parse_graph(graph: Graph,
             # handle special constant
             if node.special_constants_map:
                 graph.update_special_constants(node.special_constants_map)
+            # handle inplace output
+            if node.has_inplace_output:
+                for item in node.inplace_outputs:
+                    output_idx = item["output_index"]
+                    input_idx = item["input_index"]
+                    inplace_output_tensors[node.outputs[output_idx]] = node.inputs[input_idx]
 
         graph_inputs = list(set(graph_inputs))
         graph_outputs = list(set(graph_outputs))
@@ -516,6 +537,12 @@ def parse_graph(graph: Graph,
         if len(graph_hosts) > 0:
             graph_node.has_host_inputs = True
             graph_node.host_inputs = graph_hosts
+        if len(inplace_output_tensors) > 0:
+            graph_node.has_inplace_output = True
+            for output_name, input_name in inplace_output_tensors.items():
+                output_idx = graph_node.outputs.index(output_name)
+                input_idx = graph_ndoe.inputs.index(input_name)
+                graph_node.add_inplace_output(output_idx, input_idx)
 
     ## run graph
     inplace_tensor_with_reshape = {}
