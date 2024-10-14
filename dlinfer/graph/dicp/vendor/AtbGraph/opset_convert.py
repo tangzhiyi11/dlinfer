@@ -55,14 +55,11 @@ def atbgraph_opset_convert(
 
     gm = BackendPatternMatcherTransformer(
         atb_pattern_matcher, torch_patterns_cls_list_1).transform(gm)
-    # gm = BackendPatternMatcherTransformer(
-    #     atb_pattern_matcher, torch_patterns_cls_list_3).transform(gm)
 
     gm = AtenToAtbTransformer(gm).transform()
 
     # For bug in pytorch
     # Avoid for dynamic shape
     GraphTransformer.infer_shape_dtype(gm)
-    # gm.print_readable()
     return gm
 

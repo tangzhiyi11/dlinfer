@@ -14,20 +14,10 @@ class AtbModel():
 
     @record_function("load_and_run")
     def run(self, inputs, outputs, param):
-        # inputs = [x.npu() for x in inputs]
-        # torch.cuda.synchronize()
-        with record_function("model_execute"):
-            if len(outputs) > 0:
-                try:
-                    o = self.model.execute_out(inputs, outputs, param)
-                except Exception as e:
-                    print(e)
-                    import pdb;pdb.set_trace()
-                    pass
-                # torch.cuda.synchronize()
-                return o
-            else:
-                return self.model.execute(inputs, param)
+        if len(outputs) > 0:
+            return self.model.execute_out(inputs, outputs, param)
+        else:
+            return self.model.execute(inputs, param)
 
 
 if __name__ == '__main__':
