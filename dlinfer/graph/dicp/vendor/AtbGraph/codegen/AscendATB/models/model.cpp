@@ -152,6 +152,52 @@ int64_t Model::Init(
   return atbStatus;
 }
 
+// atb::Status Model::Execute(atb::Context* context,
+//                            std::vector<atb::Tensor>& inTensors,
+//                            std::vector<atb::Tensor>& outTensors,
+//                            const std::string& param) {
+//   if (graph_.inTensors.size() != inTensors.size() ||
+//       graph_.outTensors.size() != outTensors.size()) {
+//     DICP_LOG(ERROR) << modelName_
+//                     << " graph.inTensors.size:" << graph_.inTensors.size()
+//                     << ", inTensors.size:" << inTensors.size()
+//                     << ", graph.outTensors.size:" << graph_.outTensors.size()
+//                     << ", outTensors.size:" << outTensors.size();
+//     return atb::ERROR_INVALID_GRAPH;
+//   }
+
+//   ParseParam(param);
+
+//   ClearInternalTensors();
+//   nodeOutTensors_.clear();
+
+//   allTaskFinish_ = false;
+//   context_ = context;
+//   graph_.inTensors = inTensors;
+//   graph_.outTensors = outTensors;
+//   DICP_LOG(INFO) << modelName_
+//                  << " execute start, executeCount:" << executeCount_
+//                  << ", graph:\n"
+//                  << graph_.ToString();
+
+//   for (size_t nodeId = 0; nodeId < graph_.nodes.size(); ++nodeId) {
+//     BuildNodeVariantPack(nodeId);
+//     BindParamHostTensor(nodeId);
+//     atb::Status st = ExecuteNode(nodeId);
+//     if (st != 0) {
+//       return st;
+//     }
+//   }
+
+//   WaitAsyncPlanExecuteFinish();
+
+//   DICP_LOG(INFO) << modelName_ << " executeCount:" << executeCount_;
+
+//   executeCount_++;
+
+//   return atb::NO_ERROR;
+// }
+
 atb::Status Model::Execute(atb::Context* context,
                            std::vector<atb::Tensor>& inTensors,
                            std::vector<atb::Tensor>& outTensors,
@@ -180,16 +226,27 @@ atb::Status Model::Execute(atb::Context* context,
                  << ", graph:\n"
                  << graph_.ToString();
 
+  taskflow_.clear();  // 重置 Taskflow
+
+  std::vector<tf::Task> tasks(graph_.nodes.size());
+
   for (size_t nodeId = 0; nodeId < graph_.nodes.size(); ++nodeId) {
-    BuildNodeVariantPack(nodeId);
-    BindParamHostTensor(nodeId);
-    atb::Status st = ExecuteNode(nodeId);
-    if (st != 0) {
-      return st;
+    tasks[nodeId] = taskflow_.emplace([this, nodeId]() {
+      BuildNodeVariantPack(nodeId);
+      BindParamHostTensor(nodeId);
+      atb::Status st = ExecuteNode(nodeId);
+      if (st != 0) {
+        DICP_LOG(ERROR) << modelName_ << " execute node[" << nodeId
+                        << "] fail, error code: " << st;
+      }
+    }).name("Node" + std::to_string(nodeId));
+
+    if (nodeId > 0) {
+      tasks[nodeId - 1].precede(tasks[nodeId]);  // 设置任务依赖关系
     }
   }
 
-  WaitAsyncPlanExecuteFinish();
+  executor_.run(taskflow_).wait();
 
   DICP_LOG(INFO) << modelName_ << " executeCount:" << executeCount_;
 
@@ -197,6 +254,37 @@ atb::Status Model::Execute(atb::Context* context,
 
   return atb::NO_ERROR;
 }
+
+atb::Status Model::ExecuteNode(int nodeId) {
+  auto& node = graph_.nodes.at(nodeId);
+
+  Timer timer;
+  atb::Status st =
+      node.operation->Setup(node.variantPack, node.workspaceSize, context_);
+  if (st != 0) {
+    DICP_LOG(ERROR) << modelName_ << " setup node[" << nodeId
+                    << "] fail, not call execute";
+    return st;
+  }
+
+  DICP_LOG(INFO) << modelName_ << " get node[" << nodeId
+                 << "] workspace size:" << node.workspaceSize;
+
+  if (node.workspaceSize > 0) {
+    node.workspace = getWorkSpaceFunc_(node.workspaceSize);
+  }
+
+  DICP_LOG(INFO) << modelName_ << "execute node[" << nodeId << "] start";
+
+  st = node.operation->Execute(
+      node.variantPack, (uint8_t*)(node.workspace), node.workspaceSize, context_);
+  if (st != 0) {
+    DICP_LOG(ERROR) << "execute node[" << nodeId
+                    << "] fail, error code: " << st;
+  }
+  return st;
+}
+
 
 atb::Status Model::ParseParam(const std::string& param) {
   (void)param;
@@ -268,33 +356,33 @@ void Model::BuildNodeVariantPack(int nodeId) {
   }
 }
 
-atb::Status Model::ExecuteNode(int nodeId) {
-  auto& node = graph_.nodes.at(nodeId);
+// atb::Status Model::ExecuteNode(int nodeId) {
+//   auto& node = graph_.nodes.at(nodeId);
 
-  Timer timer;
-  atb::Status st =
-      node.operation->Setup(node.variantPack, node.workspaceSize, context_);
-  if (st != 0) {
-    DICP_LOG(ERROR) << modelName_ << " setup node[" << nodeId
-                    << "] fail, not call execute";
-    return st;
-  }
+//   Timer timer;
+//   atb::Status st =
+//       node.operation->Setup(node.variantPack, node.workspaceSize, context_);
+//   if (st != 0) {
+//     DICP_LOG(ERROR) << modelName_ << " setup node[" << nodeId
+//                     << "] fail, not call execute";
+//     return st;
+//   }
 
-  DICP_LOG(INFO) << modelName_ << " get node[" << nodeId
-                 << "] workspace size:" << node.workspaceSize;
+//   DICP_LOG(INFO) << modelName_ << " get node[" << nodeId
+//                  << "] workspace size:" << node.workspaceSize;
 
-  if (node.workspaceSize > 0) {
-    node.workspace = getWorkSpaceFunc_(node.workspaceSize);
-  }
+//   if (node.workspaceSize > 0) {
+//     node.workspace = getWorkSpaceFunc_(node.workspaceSize);
+//   }
 
-  if (isUsePlanExecuteAsync_) {
-    Timer timer;
-    ExecutePlanAsync(nodeId);
-  } else {
-    st = ExecutePlanSync(nodeId);
-  }
-  return st;
-}
+//   if (isUsePlanExecuteAsync_) {
+//     Timer timer;
+//     ExecutePlanAsync(nodeId);
+//   } else {
+//     st = ExecutePlanSync(nodeId);
+//   }
+//   return st;
+// }
 
 void Model::ThreadProcessTask() {
   DICP_LOG(INFO) << modelName_ << " thread process operations start";
