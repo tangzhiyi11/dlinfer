@@ -16,6 +16,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <taskflow/taskflow.hpp>
+
 #include "log.h"
 #include "timer.h"
 
@@ -131,5 +133,9 @@ class Model {
   int32_t currentDevId_ = 0;
   std::vector<std::pair<atb::Tensor, bool>> internalTensors_;
   std::vector<atb::Tensor*> nodeOutTensors_;
+
+  tf::Executor executor_;  // Taskflow 执行器
+  tf::Taskflow taskflow_;  // Taskflow 任务流
+
 };
 }  // namespace dicp
