@@ -252,7 +252,7 @@ def paged_prefill_attention(
                 actual_seq_lengths=kv_seq_len_list[i : i + 1],
                 antiquant_scale=None,
                 antiquant_offset=None,
-                block_table=block_table,
+                block_table=block_table[i:i+1],
                 dequant_scale1=None,
                 quant_scale1=None,
                 dequant_scale2=None,

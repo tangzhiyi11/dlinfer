@@ -373,18 +373,32 @@ class AtenToAtbTransformer(SingleOpTransformer):
         # fill_kv_cache = self.get_proxy(atb_op.ReshapeAndCache, (key, value, k_cache, v_cache, kv_start_indices_1d))
         # inplace1 = self.get_proxy(atb_op.Inplace, (fill_kv_cache, k_cache, 0))
         # inplace2 = self.get_proxy(atb_op.Inplace, (fill_kv_cache, v_cache, 1))
+        if is_unpaged_prefill:
+            k_shape = key.node.meta['val'].shape
+            num_q_heads = query.node.meta['val'].shape[-2]
+            num_kv_heads = k_shape[-2]
+            kv_head_size = k_shape[-1]
 
-        k_shape = key.node.meta['val'].shape
-        num_q_heads = query.node.meta['val'].shape[-2]
-        num_kv_heads = k_shape[-2]
-        kv_head_size = k_shape[-1]
+            query = self.get_proxy(atb_op.View, (query, [-1, num_q_heads * kv_head_size]))
+            key = self.get_proxy(atb_op.View, (key, [-1, num_kv_heads * kv_head_size]))
+            value = self.get_proxy(atb_op.View, (value, [-1, num_kv_heads * kv_head_size]))
 
-        query = self.get_proxy(atb_op.View, (query, [-1, num_q_heads * kv_head_size]))
-        key = self.get_proxy(atb_op.View, (key, [-1, num_kv_heads * kv_head_size]))
-        value = self.get_proxy(atb_op.View, (value, [-1, num_kv_heads * kv_head_size]))
+            out = self.get_proxy(atb_op.SelfAttentionPAEncoder, (query, key, value, kv_seq_len, mask[0], num_q_heads, num_kv_heads))
+        else:
+            q_shape = list(query.node.meta['val'].shape)
+            scale = 1. / math.sqrt(q_shape[-1])
+            k_cache_shape = list(k_cache.node.meta['val'].shape)
+            k_shape = list(key.node.meta['val'].shape)
+            v_cache_shape = list(v_cache.node.meta['val'].shape)
+            num_q_heads = q_shape[-2]
+            num_kv_heads = k_shape[-2]
 
-        out = self.get_proxy(atb_op.SelfAttentionPAEncoder, (query, key, value, kv_seq_len, mask[0], num_q_heads, num_kv_heads))
-        graph = self.get_proxy(atb_op.Graph, (out,), {"output": [out]})
+            is_kv_require_reshape = len(k_cache_shape) == 3 or len(v_cache_shape) == 3
+            if is_kv_require_reshape:
+                k_cache = self.get_proxy(atb_op.View, (k_cache, (k_cache_shape[0], k_cache_shape[1], num_kv_heads, -1)))
+                v_cache = self.get_proxy(atb_op.View, (v_cache, (v_cache_shape[0], v_cache_shape[1], num_kv_heads, -1)))
+            out = self.get_proxy(atb_op.PagedAttention, (query, k_cache, v_cache, block_offsets, kv_seq_len, mask[0], num_q_heads, num_kv_heads, scale))
+        # graph = self.get_proxy(atb_op.Graph, (out,), {"output": [out]})
         return out
 
     @register_conversion(torch.ops.atb.atb_paged_attention.default)
