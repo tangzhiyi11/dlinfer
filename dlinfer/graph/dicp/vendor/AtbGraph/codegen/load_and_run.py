@@ -8,16 +8,12 @@ from torch.profiler import record_function
 
 class AtbModel():
     def __init__(self, model_path) -> None:
-        self.model = torch.classes.TorchModel.TorchModel("dicp_DICPCustomModel")
-        self.model.set_param(model_path)
+        self.model = torch.classes.DICPModel.DICPModel(model_path)
         print('### in_load_and_run_model_path:', model_path)
 
     @record_function("load_and_run")
     def run(self, inputs, outputs, param):
-        if len(outputs) > 0:
-            return self.model.execute_out(inputs, outputs, param)
-        else:
-            return self.model.execute(inputs, param)
+        self.model.execute_out(inputs, outputs, param)
 
 
 if __name__ == '__main__':

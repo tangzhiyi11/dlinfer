@@ -170,7 +170,6 @@ class AtbCodegen(torch.fx.Interpreter):
                     call_body.writeline(f"{key} = {self.sym_to_inputs[key]}")
             
         # gen fixed output shape
-        call_body.writeline('''output_tensor_descs = {"outputTensorDescs": [], "hostTensors": []}''')
         graph_input_names = self.atb_graph.inputs
         graph_output_names = self.atb_graph.outputs
 
@@ -180,7 +179,7 @@ class AtbCodegen(torch.fx.Interpreter):
                 pass
             param = self.output_tensor_descs['param'][output]
             create_info = self.output_tensor_descs['create'][output]
-            call_body.writeline(f'''output_tensor_descs["outputTensorDescs"].append({param})''')
+            # call_body.writeline(f'''output_tensor_descs["outputTensorDescs"].append({param})''')
             if create_info['input'] is None:
                 device = 'npu'
                 dtype = create_info['dtype']
@@ -194,6 +193,7 @@ class AtbCodegen(torch.fx.Interpreter):
                 input = create_info['input']
                 call_body.writeline(f'''{output} = {input}''')
 
+        call_body.writeline('''param_dict = {"hostTensors": []}''')
         call_body.writeline(f'''host_tensor_dict = {{}}''')
         host_tensors = []
         for tensor in self.atb_graph.hosts:
@@ -204,14 +204,13 @@ class AtbCodegen(torch.fx.Interpreter):
             if tensor_name not in host_tensors:
                 call_body.writeline(f'''host_tensor_dict["{tensor_name}"] = {tensor_name}.cpu().tolist()''')
                 host_tensors.append(tensor_name)
-            call_body.writeline(f'''output_tensor_descs["hostTensors"].append({{"nodeId": {node_id}, "tensorId": {tensor_id}, "value": host_tensor_dict["{tensor_name}"] }})''')
+            call_body.writeline(f'''param_dict["hostTensors"].append({{"nodeId": {node_id}, "tensorId": {tensor_id}, "value": host_tensor_dict["{tensor_name}"] }})''')
 
-        call_body.writeline('''output_tensor_descs_string = json.dumps(output_tensor_descs)''')
-        call_body.writeline('''output_shape = output_tensor_descs_string ''')
+        call_body.writeline('''param = json.dumps(param_dict)''')
         call_body.writeline(f'''inputs = [{','.join(graph_input_names)}]''')
         
         call_body.writeline(f'''outputs = [{','.join(graph_output_names)}]''')
-        call_body.writeline('kernel_cpp_0(inputs, outputs, output_shape)')
+        call_body.writeline('kernel_cpp_0(inputs, outputs, param)')
 
         del_args = [f'del {x}' for x in self.args if x not in self.py_output_names]
         call_body.writelines(del_args)

@@ -38,8 +38,7 @@ include_directories(
     $ENV{ASCEND_HOME_PATH}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/ops
     ${CMAKE_CURRENT_SOURCE_DIR}/ops/aclnn_ops
-    ${CMAKE_CURRENT_SOURCE_DIR}/pytorch_adapter
-    ${CMAKE_CURRENT_SOURCE_DIR}/models
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime
     ${CMAKE_CURRENT_SOURCE_DIR}/utils
 )
 
@@ -54,8 +53,7 @@ link_directories(
 file(GLOB_RECURSE SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/ops/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ops/aclnn_ops/*.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/pytorch_adapter/*.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/models/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/*.cpp
 )
 
