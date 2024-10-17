@@ -18,11 +18,9 @@ DICPModel::DICPModel(const std::string& modelPath) : modelPath_(modelPath) {
     DICP_LOG(INFO) << "DICPModel create start, modelId:" << modelId_
                    << ", modelPath:" << modelPath_;
     model_ = std::make_shared<Model>(std::to_string(modelId_), modelPath);
-    auto st = model_->Init();
-    DICP_LOG_IF(st != atb::NO_ERROR, ERROR) << "create model failed!";
 
     atb::Context* rawContext = nullptr;
-    st = atb::CreateContext(&rawContext);
+    auto st = atb::CreateContext(&rawContext);
     DICP_LOG_IF(st != atb::NO_ERROR, ERROR) << "create atb context failed!";
     context_ = std::move(std::unique_ptr<atb::Context, decltype(&atb::DestroyContext)>(
         rawContext, atb::DestroyContext));

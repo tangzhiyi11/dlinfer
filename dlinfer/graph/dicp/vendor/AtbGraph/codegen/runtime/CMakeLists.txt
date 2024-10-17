@@ -24,13 +24,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
-set(THIRD_PARTY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty)
+set(THIRD_PARTY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
 
 include_directories(
     $ENV{PYTHON_INCLUDE_PATH}
     ${THIRD_PARTY_DIR}/json/single_include
     ${THIRD_PARTY_DIR}/spdlog/include
-    ${THIRD_PARTY_DIR}/taskflow
     ${TORCH_PATH}/include
     ${TORCH_PATH}/include/torch/csrc/api/include
     ${TORCH_NPU_PATH}/include
@@ -38,7 +37,7 @@ include_directories(
     $ENV{ASCEND_HOME_PATH}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/ops
     ${CMAKE_CURRENT_SOURCE_DIR}/ops/aclnn_ops
-    ${CMAKE_CURRENT_SOURCE_DIR}/runtime
+    ${CMAKE_CURRENT_SOURCE_DIR}/
     ${CMAKE_CURRENT_SOURCE_DIR}/utils
 )
 
@@ -53,7 +52,7 @@ link_directories(
 file(GLOB_RECURSE SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/ops/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ops/aclnn_ops/*.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/runtime/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/*.cpp
 )
 

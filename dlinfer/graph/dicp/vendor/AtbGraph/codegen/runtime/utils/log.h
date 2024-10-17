@@ -74,7 +74,7 @@ class LoggerInitializer {
         return it->second;
       }
     }
-    return LogLevel::FATAL;
+    return LogLevel::ERROR;
   }
 
   static bool initShouldLogToFile() {
