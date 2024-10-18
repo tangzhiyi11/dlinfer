@@ -15,30 +15,24 @@ namespace dicp {
 std::string Graph::ToString() const {
     std::stringstream ss;
     for (size_t i = 0; i < inTensors.size(); ++i) {
-        ss << "inTensors[" << i << "]:" << &inTensors.at(i) << " "
-           << tensor_utils::TensorToString(inTensors.at(i)) << std::endl;
+        ss << "inTensors[" << i << "]:" << &inTensors.at(i) << " " << tensor_utils::TensorToString(inTensors.at(i)) << std::endl;
     }
     for (size_t i = 0; i < outTensors.size(); ++i) {
-        ss << "outTensors[" << i << "]:" << &outTensors.at(i) << " "
-           << tensor_utils::TensorToString(outTensors.at(i)) << std::endl;
+        ss << "outTensors[" << i << "]:" << &outTensors.at(i) << " " << tensor_utils::TensorToString(outTensors.at(i)) << std::endl;
     }
     for (size_t i = 0; i < internalTensors.size(); ++i) {
-        ss << "internalTensors[" << i << "]:" << &internalTensors.at(i) << " "
-           << tensor_utils::TensorToString(internalTensors.at(i)) << std::endl;
+        ss << "internalTensors[" << i << "]:" << &internalTensors.at(i) << " " << tensor_utils::TensorToString(internalTensors.at(i)) << std::endl;
     }
     ss << "nodes:" << nodes.size() << std::endl;
 
     for (size_t i = 0; i < nodes.size(); ++i) {
         auto& node = nodes.at(i);
-        ss << "node[" << i << "] operation:" << node.operation.get()
-           << ", operationName:" << node.operation->GetName() << std::endl;
+        ss << "node[" << i << "] operation:" << node.operation.get() << ", operationName:" << node.operation->GetName() << std::endl;
         for (auto tensorIt : node.inTensors) {
-            ss << "node[" << i << "] inTensor:" << tensorIt << " "
-               << tensor_utils::TensorToString(*tensorIt) << std::endl;
+            ss << "node[" << i << "] inTensor:" << tensorIt << " " << tensor_utils::TensorToString(*tensorIt) << std::endl;
         }
         for (auto tensorIt : node.outTensors) {
-            ss << "node[" << i << "] outTensor:" << tensorIt << " "
-               << tensor_utils::TensorToString(*tensorIt) << std::endl;
+            ss << "node[" << i << "] outTensor:" << tensorIt << " " << tensor_utils::TensorToString(*tensorIt) << std::endl;
         }
     }
     return ss.str();
@@ -59,14 +53,10 @@ void Graph::InitTensorType() {
         node.inTensorTypes.resize(node.inTensors.size());
         node.outTensorTypes.resize(node.outTensors.size());
         for (size_t i = 0; i < node.inTensors.size(); ++i) {
-            node.inTensorTypes.at(i) = IsInternalTensor(node.inTensors.at(i))
-                                           ? TensorType::INTERMEDIATE_TENSOR
-                                           : TensorType::NOT_INTERMEDIATE_TENSOR;
+            node.inTensorTypes.at(i) = IsInternalTensor(node.inTensors.at(i)) ? TensorType::INTERMEDIATE_TENSOR : TensorType::NOT_INTERMEDIATE_TENSOR;
         }
         for (size_t i = 0; i < node.outTensors.size(); ++i) {
-            node.outTensorTypes.at(i) = IsInternalTensor(node.outTensors.at(i))
-                                            ? TensorType::INTERMEDIATE_TENSOR
-                                            : TensorType::NOT_INTERMEDIATE_TENSOR;
+            node.outTensorTypes.at(i) = IsInternalTensor(node.outTensors.at(i)) ? TensorType::INTERMEDIATE_TENSOR : TensorType::NOT_INTERMEDIATE_TENSOR;
         }
     }
 }
@@ -99,8 +89,7 @@ void Graph::InitTensorMaxNodeMap() {
             }
         }
         tensorMaxNodeIdMap[&internalTensor] = maxNodeId;
-        DICP_LOG_IF(dependNodeCount == 0, INFO)
-            << "runner graph internal tensor[" << i << "] dependNodeCount is 0.";
+        DICP_LOG_IF(dependNodeCount == 0, INFO) << "runner graph internal tensor[" << i << "] dependNodeCount is 0.";
         maxNodeIdTensorMap[maxNodeId].insert(&internalTensor);
     }
 }
@@ -111,8 +100,7 @@ atb::Tensor Model::CreateInternalTensorFromDesc(const atb::TensorDesc& tensorDes
     return tensor_utils::AtTensor2Tensor(newAtTensor);
 }
 
-Model::Model(const std::string& modelId, const std::string& modelPath)
-    : modelId_(modelId), modelPath_(modelPath) {
+Model::Model(const std::string& modelId, const std::string& modelPath) : modelId_(modelId), modelPath_(modelPath) {
     auto st = BuildGraph();
     DICP_LOG_IF(st != atb::NO_ERROR, ERROR) << modelId_ << " init graph:\n" << graph_.ToString();
 
@@ -188,14 +176,10 @@ int64_t Model::BuildGraph() {
     return atb::NO_ERROR;
 }
 
-atb::Status Model::Execute(atb::Context* context, std::vector<atb::Tensor>& inTensors,
-                           std::vector<atb::Tensor>& outTensors, const std::string& param) {
-    if (graph_.inTensors.size() != inTensors.size() ||
-        graph_.outTensors.size() != outTensors.size()) {
-        DICP_LOG(FATAL) << modelId_ << " graph.inTensors.size:" << graph_.inTensors.size()
-                        << ", inTensors.size:" << inTensors.size()
-                        << ", graph.outTensors.size:" << graph_.outTensors.size()
-                        << ", outTensors.size:" << outTensors.size();
+atb::Status Model::Execute(atb::Context* context, std::vector<atb::Tensor>& inTensors, std::vector<atb::Tensor>& outTensors, const std::string& param) {
+    if (graph_.inTensors.size() != inTensors.size() || graph_.outTensors.size() != outTensors.size()) {
+        DICP_LOG(FATAL) << modelId_ << " graph.inTensors.size:" << graph_.inTensors.size() << ", inTensors.size:" << inTensors.size()
+                        << ", graph.outTensors.size:" << graph_.outTensors.size() << ", outTensors.size:" << outTensors.size();
         return atb::ERROR_INVALID_GRAPH;
     }
 
@@ -217,8 +201,7 @@ atb::Status Model::Execute(atb::Context* context, std::vector<atb::Tensor>& inTe
     for (size_t nodeId = 0; nodeId < graph_.nodes.size(); ++nodeId) {
         BuildNodeVariantPack(nodeId);
         atb::Status st = ExecuteNode(nodeId);
-        DICP_LOG_IF(st != atb::NO_ERROR, FATAL)
-            << modelId_ << " execute node[" << nodeId << "] failed, error code: " << st;
+        DICP_LOG_IF(st != atb::NO_ERROR, FATAL) << modelId_ << " execute node[" << nodeId << "] failed, error code: " << st;
     }
 
     DICP_LOG(INFO) << modelId_ << " execute finshed!";
@@ -233,8 +216,7 @@ atb::Status Model::ExecuteNode(int nodeId) {
         return st;
     }
 
-    DICP_LOG(INFO) << modelId_ << " get node[" << nodeId
-                   << "] workspace size:" << node.workspaceSize;
+    DICP_LOG(INFO) << modelId_ << " get node[" << nodeId << "] workspace size:" << node.workspaceSize;
 
     if (node.workspaceSize > 0) {
         node.workspace = GetWorkspaceBuffer(node.workspaceSize);
@@ -242,8 +224,7 @@ atb::Status Model::ExecuteNode(int nodeId) {
 
     DICP_LOG(INFO) << modelId_ << "execute node[" << nodeId << "] start";
 
-    st = node.operation->Execute(
-        node.variantPack, (uint8_t*)(node.workspace), node.workspaceSize, context_);
+    st = node.operation->Execute(node.variantPack, (uint8_t*)(node.workspace), node.workspaceSize, context_);
     if (st != 0) {
         DICP_LOG(ERROR) << "execute node[" << nodeId << "] fail, error code: " << st;
     }
@@ -261,13 +242,11 @@ void Model::BuildNodeVariantPack(int nodeId) {
         node.variantPack.inTensors.at(i) = *node.inTensors.at(i);
         inTensorDescs.at(i) = node.inTensors.at(i)->desc;
         if (needReshape) {
-            node.inTensorReshapeFuncs.at(i)(node.inTensors.at(i)->desc.shape,
-                                            inTensorDescs.at(i).shape);
+            node.inTensorReshapeFuncs.at(i)(node.inTensors.at(i)->desc.shape, inTensorDescs.at(i).shape);
             node.variantPack.inTensors.at(i).desc.shape = inTensorDescs.at(i).shape;
             node.inTensors.at(i)->desc.shape = inTensorDescs.at(i).shape;
         }
-        DICP_LOG(INFO) << modelId_ << " nodes[" << nodeId << "] inTensors[" << i
-                       << "]:" << tensor_utils::TensorToString(node.variantPack.inTensors.at(i));
+        DICP_LOG(INFO) << modelId_ << " nodes[" << nodeId << "] inTensors[" << i << "]:" << tensor_utils::TensorToString(node.variantPack.inTensors.at(i));
     }
 
     atb::SVector<atb::TensorDesc> outTensorDescs;
@@ -289,8 +268,7 @@ void Model::BuildNodeVariantPack(int nodeId) {
 
         node.variantPack.outTensors.at(i) = *node.outTensors.at(i);
         if (node.outTensorTypes.at(i) == TensorType::INTERMEDIATE_TENSOR) {
-            node.variantPack.outTensors.at(i) =
-                MallocInternalTensor(node.outTensors.at(i), nodeId, i, outTensorDescs.at(i));
+            node.variantPack.outTensors.at(i) = MallocInternalTensor(node.outTensors.at(i), nodeId, i, outTensorDescs.at(i));
             *node.outTensors.at(i) = node.variantPack.outTensors.at(i);
         }
     }
@@ -342,8 +320,7 @@ void Model::CreateSingleOperation(const nlohmann::json& paramJson, Node& node) {
         }
     }
     if (getValue<bool>(paramJson, "hasReshapeInputs")) {
-        SetupReshapeFunctions(
-            paramJson["reshapeInputs"], node.inTensorReshapeFuncs, node.inTensors.size());
+        SetupReshapeFunctions(paramJson["reshapeInputs"], node.inTensorReshapeFuncs, node.inTensors.size());
     }
     if (getValue<bool>(paramJson, "hasInplaceOutputs")) {
         SetupInplaceOutputs(paramJson["inplaceOutputs"], node.inplaceIndices);
@@ -394,9 +371,7 @@ void Model::CreateGraphOperation(const nlohmann::json& paramJson, Node& node) {
 
             if (getValue<bool>(nodeOp, "hasReshapeInputs")) {
                 auto& cur_node = graph_param.nodes[cur_node_index];
-                SetupReshapeFunctions(nodeOp["reshapeInputs"],
-                                      cur_node.inTensorReshapeFuncs,
-                                      cur_node.inTensorIds.size());
+                SetupReshapeFunctions(nodeOp["reshapeInputs"], cur_node.inTensorReshapeFuncs, cur_node.inTensorIds.size());
             }
         } else {
             DICP_LOG(ERROR) << "invalid node type in graph opearation, ndoeType: " << nodeType;
@@ -440,8 +415,7 @@ void Model::SetupInferShape(const nlohmann::json& inferShape, atb::InferShapeFun
     auto inferType = getValue<std::string>(inferShape, "type");
     if (inferType == "equal") {
         auto outputByInput = getValue<std::vector<int32_t>>(inferShape, "value");
-        inferShapeFunc = [=](const atb::SVector<atb::TensorDesc>& inTensorDescs,
-                             atb::SVector<atb::TensorDesc>& outTensorDescs) {
+        inferShapeFunc = [=](const atb::SVector<atb::TensorDesc>& inTensorDescs, atb::SVector<atb::TensorDesc>& outTensorDescs) {
             for (size_t i = 0; i < outTensorDescs.size(); ++i) {
                 outTensorDescs.at(i) = inTensorDescs.at(outputByInput[i]);
             }
@@ -450,8 +424,7 @@ void Model::SetupInferShape(const nlohmann::json& inferShape, atb::InferShapeFun
     }
 }
 
-void Model::SetupInplaceOutputs(const nlohmann::json& inplaceOutputs,
-                                std::unordered_map<int, int>& inplaceIndices) {
+void Model::SetupInplaceOutputs(const nlohmann::json& inplaceOutputs, std::unordered_map<int, int>& inplaceIndices) {
     for (const auto& inplaceTensors : inplaceOutputs) {
         auto outputIdx = getValue<int32_t>(inplaceTensors, "output_index");
         auto inputIdx = getValue<int32_t>(inplaceTensors, "input_index");
@@ -459,16 +432,13 @@ void Model::SetupInplaceOutputs(const nlohmann::json& inplaceOutputs,
     }
 }
 
-void Model::SetupReshapeFunctions(const nlohmann::json& reshapeInputs,
-                                  atb::SVector<atb::ReshapeFunc>& funcs, size_t tensorSize) {
+void Model::SetupReshapeFunctions(const nlohmann::json& reshapeInputs, atb::SVector<atb::ReshapeFunc>& funcs, size_t tensorSize) {
     funcs.resize(tensorSize);
     int count = 0;
     for (const auto& reshapeInput : reshapeInputs) {
         auto reshapeType = getValue<std::string>(reshapeInput, "reshapeType");
         if (reshapeType == "None") {
-            funcs.at(count) = [](const atb::Dims& oldShape, atb::Dims& newShape) {
-                newShape = oldShape;
-            };
+            funcs.at(count) = [](const atb::Dims& oldShape, atb::Dims& newShape) { newShape = oldShape; };
         } else if (reshapeType == "view") {
             SetupViewReshape(reshapeInput, funcs.at(count));
         } else if (reshapeType == "unsqueeze") {
@@ -539,8 +509,7 @@ void Model::SetupSqueezeReshape(const nlohmann::json& reshapeInput, atb::Reshape
     };
 }
 
-bool Model::IsTensorDescEqual(const atb::TensorDesc& tensorDesc,
-                              const atb::Tensor& atbTensor) const {
+bool Model::IsTensorDescEqual(const atb::TensorDesc& tensorDesc, const atb::Tensor& atbTensor) const {
     if (atbTensor.desc.dtype != tensorDesc.dtype || atbTensor.desc.format != tensorDesc.format) {
         return false;
     }
@@ -564,11 +533,9 @@ void Model::ClearInternalTensors() {
     atInternalTensors_.clear();
 }
 
-atb::Tensor Model::MallocInternalTensor(atb::Tensor* outTensor, size_t nodeId, size_t outTensorId,
-                                        const atb::TensorDesc& tensorDesc) {
+atb::Tensor Model::MallocInternalTensor(atb::Tensor* outTensor, size_t nodeId, size_t outTensorId, const atb::TensorDesc& tensorDesc) {
     if (nodeOutTensors_.find(outTensor) != nodeOutTensors_.end()) {
-        DICP_LOG(INFO) << modelId_ << " nodeId: " << nodeId << ", out tensor id: " << outTensorId
-                       << " write inplace.";
+        DICP_LOG(INFO) << modelId_ << " nodeId: " << nodeId << ", out tensor id: " << outTensorId << " write inplace.";
         return *outTensor;
     }
 
@@ -584,8 +551,7 @@ atb::Tensor Model::MallocInternalTensor(atb::Tensor* outTensor, size_t nodeId, s
         }
     }
 
-    DICP_LOG(INFO) << modelId_ << " create internal tensor, node[" << nodeId << "], outTensor["
-                   << outTensorId << "]";
+    DICP_LOG(INFO) << modelId_ << " create internal tensor, node[" << nodeId << "], outTensor[" << outTensorId << "]";
     atb::Tensor newTensor = CreateInternalTensorFromDesc(tensorDesc);
     internalTensors_.push_back(std::make_pair(newTensor, true));
     nodeOutTensors_.insert(outTensor);

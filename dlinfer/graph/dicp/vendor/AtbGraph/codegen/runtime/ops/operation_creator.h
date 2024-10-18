@@ -1,6 +1,7 @@
 #pragma once
 
 #include <nlohmann/json.hpp>
+
 #include <string>
 
 #include "all_ops.h"
@@ -8,8 +9,7 @@
 
 namespace dicp {
 
-using OperationCreateFunc =
-    std::function<atb::Operation*(const nlohmann::json& paramJson)>;
+using OperationCreateFunc = std::function<atb::Operation*(const nlohmann::json& paramJson)>;
 
 static std::map<std::string, OperationCreateFunc> g_funcMap = {
     {"LinearOperation", &LinearOperationCreate},
@@ -30,7 +30,6 @@ static std::map<std::string, OperationCreateFunc> g_funcMap = {
     {"AclNnCastOperation", &AclNnCastOperationCreate},
 };
 
-atb::Operation* CreateOperation(const std::string& opName,
-                                const nlohmann::json& paramJson);
+atb::Operation* CreateOperation(const std::string& opName, const nlohmann::json& paramJson);
 
 }  // namespace dicp

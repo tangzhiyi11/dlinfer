@@ -17,10 +17,11 @@
 namespace dicp {
 namespace tensor_utils {
 
+static int64_t GetTensorNpuFormat(const at::Tensor& tensor) { return at_npu::native::get_npu_format(tensor); }
+
 std::string TensorToString(const atb::Tensor& tensor) {
     std::stringstream ss;
-    ss << TensorDescToString(tensor.desc) << ", deviceData:" << tensor.deviceData
-       << ", hostData:" << tensor.hostData << ", dataSize:" << tensor.dataSize;
+    ss << TensorDescToString(tensor.desc) << ", deviceData:" << tensor.deviceData << ", hostData:" << tensor.hostData << ", dataSize:" << tensor.dataSize;
     return ss.str();
 }
 
@@ -37,34 +38,6 @@ std::string TensorDescToString(const atb::TensorDesc& tensorDesc) {
     ss << "]";
 
     return ss.str();
-}
-
-uint64_t GetTensorNumel(const atb::Tensor& tensor) { return GetTensorNumel(tensor.desc); }
-
-uint64_t GetTensorNumel(const atb::TensorDesc& tensorDesc) {
-    if (tensorDesc.shape.dimNum == 0) {
-        return 0;
-    }
-
-    int64_t elementCount = 1;
-    for (size_t i = 0; i < tensorDesc.shape.dimNum; i++) {
-        elementCount *= tensorDesc.shape.dims[i];
-    }
-
-    return elementCount;
-}
-
-bool TensorDescEqual(const atb::TensorDesc& tensorDescA, const atb::TensorDesc& tensorDescB) {
-    if (tensorDescA.dtype == tensorDescB.dtype && tensorDescA.format == tensorDescB.format &&
-        tensorDescA.shape.dimNum == tensorDescB.shape.dimNum) {
-        for (size_t i = 0; i < tensorDescA.shape.dimNum; i++) {
-            if (tensorDescA.shape.dims[i] != tensorDescB.shape.dims[i]) {
-                return false;
-            }
-        }
-        return true;
-    }
-    return false;
 }
 
 atb::Tensor AtTensor2Tensor(const at::Tensor& atTensor) {
@@ -105,14 +78,6 @@ atb::Tensor AtTensor2Tensor(const at::Tensor& atTensor) {
     return tensor;
 }
 
-at::Tensor NpuFormatCast(const at::Tensor& tensor) {
-    return at_npu::native::npu_format_cast(tensor, GetTensorNpuFormat(tensor));
-}
-
-int64_t GetTensorNpuFormat(const at::Tensor& tensor) {
-    return at_npu::native::get_npu_format(tensor);
-}
-
 at::Tensor CreateAtTensorFromTensorDesc(const atb::TensorDesc& tensorDesc) {
     static std::map<aclDataType, at::ScalarType> dtypeMap = {
         {ACL_BOOL, at::ScalarType::Bool},
@@ -132,53 +97,32 @@ at::Tensor CreateAtTensorFromTensorDesc(const atb::TensorDesc& tensorDesc) {
         DICP_LOG(ERROR) << "not support dtype:" << tensorDesc.dtype;
     }
 
-    options = options.layout(torch::kStrided)
-                  .requires_grad(false)
-                  .device(torch_npu::utils::get_npu_device_type());
+    options = options.layout(torch::kStrided).requires_grad(false).device(torch_npu::utils::get_npu_device_type());
 
     DICP_LOG(INFO) << "tensor_with_format stat, " << TensorDescToString(tensorDesc);
 
-    at::Tensor newTensor = at_npu::native::empty_with_format(
-        at::IntArrayRef(tensorDesc.shape.dims, tensorDesc.shape.dimNum),
-        options,
-        tensorDesc.format);
+    at::Tensor newTensor = at_npu::native::empty_with_format(at::IntArrayRef(tensorDesc.shape.dims, tensorDesc.shape.dimNum), options, tensorDesc.format);
 
-    DICP_LOG(INFO) << "tensor_with_format end, newTensor.format:" << GetTensorNpuFormat(newTensor)
-                   << ", is_contiguous:" << newTensor.is_contiguous();
+    DICP_LOG(INFO) << "tensor_with_format end, newTensor.format:" << GetTensorNpuFormat(newTensor) << ", is_contiguous:" << newTensor.is_contiguous();
     if (GetTensorNpuFormat(newTensor) != tensorDesc.format) {
-        DICP_LOG(WARN) << "tensor_with_format newTensor.format:" << GetTensorNpuFormat(newTensor)
-                       << " != " << tensorDesc.format;
+        DICP_LOG(WARN) << "tensor_with_format newTensor.format:" << GetTensorNpuFormat(newTensor) << " != " << tensorDesc.format;
         newTensor = at_npu::native::npu_format_cast(newTensor, tensorDesc.format);
     }
     if (!newTensor.is_contiguous()) {
         newTensor = newTensor.contiguous();
     }
 
-    DICP_LOG(INFO) << "tensor_with_format success, newTensor.options:" << newTensor.options()
-                   << ", format:" << GetTensorNpuFormat(newTensor)
+    DICP_LOG(INFO) << "tensor_with_format success, newTensor.options:" << newTensor.options() << ", format:" << GetTensorNpuFormat(newTensor)
                    << ", is_contiguous:" << newTensor.is_contiguous();
 
     return newTensor;
 }
 
-void ContiguousAtTensors(std::vector<torch::Tensor>& atTensors) {
-    for (size_t i = 0; i < atTensors.size(); ++i) {
-        if (!atTensors.at(i).is_contiguous()) {
-            atTensors.at(i) = atTensors.at(i).contiguous();
-        }
-    }
-}
-
-void ContiguousAtTensor(torch::Tensor& atTensor) {
-    if (!atTensor.is_contiguous()) {
-        atTensor = atTensor.contiguous();
-    }
-}
-
-int64_t TransferAtTensor2AtbTensor(std::vector<torch::Tensor>& atTensors,
-                                   std::vector<atb::Tensor>& atbTensors) {
+int64_t TransferAtTensor2AtbTensor(std::vector<torch::Tensor>& atTensors, std::vector<atb::Tensor>& atbTensors) {
     for (auto& atTensor : atTensors) {
-        ContiguousAtTensor(atTensor);
+        if (!atTensor.is_contiguous()) {
+            atTensor = atTensor.contiguous();
+        }
         atb::Tensor tensor = AtTensor2Tensor(atTensor);
         atbTensors.push_back(tensor);
     }

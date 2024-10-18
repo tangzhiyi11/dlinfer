@@ -3,7 +3,7 @@
 namespace dicp {
 namespace utils {
 
-void *GetCurrentStream();
+void* GetCurrentStream();
 int GetNewModelId();
 
 }  // namespace utils

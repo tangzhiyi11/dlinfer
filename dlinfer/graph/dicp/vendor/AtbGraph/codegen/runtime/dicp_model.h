@@ -12,8 +12,7 @@ class DICPModel : public torch::CustomClassHolder {
 public:
     DICPModel(const std::string& modelPath);
     ~DICPModel();
-    void ExecuteOut(std::vector<torch::Tensor> atInTensors,
-                    std::vector<torch::Tensor> atOutTensors, const std::string& param);
+    void ExecuteOut(std::vector<torch::Tensor> atInTensors, std::vector<torch::Tensor> atOutTensors, const std::string& param);
 
 private:
     std::string modelPath_;

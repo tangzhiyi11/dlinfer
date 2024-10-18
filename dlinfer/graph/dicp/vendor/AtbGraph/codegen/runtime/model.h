@@ -68,8 +68,7 @@ class Model {
 public:
     Model(const std::string& modelId, const std::string& modelPath);
     virtual ~Model();
-    atb::Status Execute(atb::Context* context, std::vector<atb::Tensor>& inTensors,
-                        std::vector<atb::Tensor>& outTensors, const std::string& param);
+    atb::Status Execute(atb::Context* context, std::vector<atb::Tensor>& inTensors, std::vector<atb::Tensor>& outTensors, const std::string& param);
 
 private:
     int64_t BuildGraph();
@@ -81,13 +80,10 @@ private:
     void BuildNodeVariantPack(int nodeId);
     atb::Status ExecuteNode(int nodeId);
     void ClearInternalTensors();
-    atb::Tensor MallocInternalTensor(atb::Tensor* outTensor, size_t nodeId, size_t outTensorId,
-                                     const atb::TensorDesc& tensorDesc);
+    atb::Tensor MallocInternalTensor(atb::Tensor* outTensor, size_t nodeId, size_t outTensorId, const atb::TensorDesc& tensorDesc);
     void FreeInternalTensor(void* tensorDeviceData);
-    void SetupInplaceOutputs(const nlohmann::json& inplaceOutputs,
-                             std::unordered_map<int, int>& inplaceIndices);
-    void SetupReshapeFunctions(const nlohmann::json& reshapeInputs,
-                               atb::SVector<atb::ReshapeFunc>& funcs, size_t tensorSize);
+    void SetupInplaceOutputs(const nlohmann::json& inplaceOutputs, std::unordered_map<int, int>& inplaceIndices);
+    void SetupReshapeFunctions(const nlohmann::json& reshapeInputs, atb::SVector<atb::ReshapeFunc>& funcs, size_t tensorSize);
     void SetupViewReshape(const nlohmann::json& reshapeInput, atb::ReshapeFunc& func);
     void SetupUnsqueezeReshape(const nlohmann::json& reshapeInput, atb::ReshapeFunc& func);
     void SetupSqueezeReshape(const nlohmann::json& reshapeInput, atb::ReshapeFunc& func);
@@ -102,8 +98,7 @@ private:
     std::unordered_map<std::string, int> inputTensorsMap_;
     std::unordered_map<std::string, int> outputTensorsMap_;
     std::unordered_map<std::string, int> internalTensorsMap_;
-    std::unordered_map<int32_t, std::unordered_map<int32_t, std::vector<int32_t>>>
-        nodeHostTensorMap_;
+    std::unordered_map<int32_t, std::unordered_map<int32_t, std::vector<int32_t>>> nodeHostTensorMap_;
     std::vector<std::pair<atb::Tensor, bool>> internalTensors_;
     std::unordered_set<atb::Tensor*> nodeOutTensors_;
     std::vector<torch::Tensor> atInternalTensors_;
