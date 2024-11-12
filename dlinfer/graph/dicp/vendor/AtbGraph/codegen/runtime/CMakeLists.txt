@@ -36,6 +36,7 @@ include_directories(
     ${TORCH_NPU_PATH}/include
     $ENV{ATB_HOME_PATH}/include
     $ENV{ASCEND_HOME_PATH}/include
+    $ENV{ASCEND_HOME_PATH}/include/aclnn
     ${CMAKE_CURRENT_SOURCE_DIR}/ops
     ${CMAKE_CURRENT_SOURCE_DIR}/ops/aclnn_ops
     ${CMAKE_CURRENT_SOURCE_DIR}/

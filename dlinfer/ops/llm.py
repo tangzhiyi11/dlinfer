@@ -368,7 +368,7 @@ def moe_gating_topk_softmax_impl_abstract_func(
 ) -> Tuple[Tensor, Tensor]:
     routing_weights = router_logits.new_empty((*router_logits.shape[:-1], topk))
     selected_experts = router_logits.new_empty(
-        (*router_logits.shape[:-1], topk), dtype=torch.int32
+        (*router_logits.shape[:-1], topk), dtype=torch.int64
     )
     return routing_weights, selected_experts
 
