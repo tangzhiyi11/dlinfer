@@ -229,6 +229,18 @@ class AtbOverrides:
         op.set_output([name])
         return op
 
+    def GeScalar(name, x, y, dtype="FLOAT"):
+        op = Operation(name, "AclNnGeScalarOperation")
+        param = infer_param.GeScalarParam()
+        param.name = name
+        param.value = float(y)
+        param.dtype = dtype
+
+        op.set_input([x])
+        op.set_param(param)
+        op.set_output([name])
+        return op
+
     def GtScalar(name, x, y, dtype="FLOAT"):
         op = Operation(name, "AclNnGtScalarOperation")
         param = infer_param.GtScalarParam()
@@ -609,3 +621,73 @@ class AtbOverrides:
         op.set_param(param)
         op.set_output([name])
         return op
+
+    def AclNnAdd(name, x, y, dtype="FLOAT", alpha=1.0):
+        op = Operation(name, "AclNnAddOperation")
+        param = infer_param.AddsParam()
+        param.name = name
+        param.dtype = dtype
+        param.alpha = alpha
+
+        op.set_input([x, y])
+        op.set_param(param)
+        op.set_output([name])
+        return op
+
+    def AclNnSub(name, x, y, dtype="FLOAT", alpha=1.0):
+        op = Operation(name, "AclNnSubOperation")
+        param = infer_param.SubsParam()
+        param.name = name
+        param.dtype = dtype
+        param.alpha = alpha
+
+        op.set_input([x, y])
+        op.set_param(param)
+        op.set_output([name])
+        return op
+
+    def AclNnDiv(name, x, y, dtype="FLOAT"):
+        op = Operation(name, "AclNnDivOperation")
+        param = infer_param.SubsParam()
+        param.name = name
+
+        op.set_input([x, y])
+        op.set_param(param)
+        op.set_output([name])
+        return op
+
+    def AclNnMul(name, x, y, dtype="FLOAT"):
+        op = Operation(name, "AclNnMulOperation")
+        param = infer_param.AclNnOnlyNameParam()
+        param.name = name
+
+        op.set_input([x, y])
+        op.set_param(param)
+        op.set_output([name])
+        return op
+
+    def AclNnGather(name, x, dim, index):
+        op = Operation(name, "AclNnGatherOperation")
+        param = infer_param.AclNnGatherParam()
+        param.name = name
+        param.dim = dim
+
+        op.set_input([x, index])
+        op.set_param(param)
+        op.set_output([name])
+        return op
+
+    def InplaceScatter(name, x, dim, index, src):
+        op = Operation(name, "AclNnInplaceScatterOperation")
+        param = infer_param.AclNnInplaceScatterParam()
+        param.name = name
+        param.dim = dim
+        param.reduceType = 0
+
+        op.set_input([x, index, src])
+        op.set_param(param)
+        op.set_output([name])
+        op.has_inplace_output = True
+        op.add_inplace_output(0, 0)
+        return op
+

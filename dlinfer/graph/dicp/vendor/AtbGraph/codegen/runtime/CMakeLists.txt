@@ -38,7 +38,9 @@ include_directories(
     $ENV{ASCEND_HOME_PATH}/include
     $ENV{ASCEND_HOME_PATH}/include/aclnn
     ${CMAKE_CURRENT_SOURCE_DIR}/ops
-    ${CMAKE_CURRENT_SOURCE_DIR}/ops/aclnn_ops
+    # ${CMAKE_CURRENT_SOURCE_DIR}/ops/aclnn_ops
+    # ${CMAKE_CURRENT_SOURCE_DIR}/ops/atb_ops
+    # ${CMAKE_CURRENT_SOURCE_DIR}/ops/atb_ops
     ${CMAKE_CURRENT_SOURCE_DIR}/
     ${CMAKE_CURRENT_SOURCE_DIR}/utils
 )
@@ -54,6 +56,8 @@ link_directories(
 file(GLOB_RECURSE SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/ops/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ops/aclnn_ops/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ops/atb_ops/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ops/custom_ops/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/*.cpp
 )

@@ -61,6 +61,14 @@ class Adds(Operator):
         return a + b
 
 
+class AclNnAdd(Operator):
+    def __init__(self):
+        super().__init__("AclNnAdd")
+
+    def infer_result(self, a, b, dtype="FLOAT"):
+        return a + b
+
+
 class Sub(Operator):
     def __init__(self):
         super().__init__("Sub")
@@ -72,6 +80,14 @@ class Sub(Operator):
 class Subs(Operator):
     def __init__(self):
         super().__init__("Subs")
+
+    def infer_result(self, a, b, dtype="FLOAT"):
+        return a - b
+
+
+class AclNnSub(Operator):
+    def __init__(self):
+        super().__init__("AclNnSub")
 
     def infer_result(self, a, b, dtype="FLOAT"):
         return a - b
@@ -93,6 +109,14 @@ class Divs(Operator):
         return a / b
 
 
+class AclNnDiv(Operator):
+    def __init__(self):
+        super().__init__("AclNnDiv")
+
+    def infer_result(self, a, b, dtype="FLOAT"):
+        return a / b
+
+
 class Mul(Operator):
     def __init__(self):
         super().__init__("Mul")
@@ -104,6 +128,14 @@ class Mul(Operator):
 class Muls(Operator):
     def __init__(self):
         super().__init__("Muls")
+
+    def infer_result(self, a, b, dtype="FLOAT"):
+        return a * b
+
+
+class AclNnMul(Operator):
+    def __init__(self):
+        super().__init__("AclNnMul")
 
     def infer_result(self, a, b, dtype="FLOAT"):
         return a * b
@@ -139,6 +171,14 @@ class Reciprocal(Operator):
 
     def infer_result(self, x):
         return torch.ops.aten.reciprocal.default(x)
+
+
+class GeScalar(Operator):
+    def __init__(self):
+        super().__init__("GeScalar")
+
+    def infer_result(self, x, y, dtype="FLOAT"):
+        return torch.ops.aten.ge.Scalar(x, y)
 
 
 class GtScalar(Operator):
@@ -406,3 +446,19 @@ class IndexSelect(Operator):
         indices = [None] * len(x.shape)
         indices[dim] = index
         return torch.ops.aten.index.Tensor(x, indices)
+
+
+class AclNnGather(Operator):
+    def __init__(self):
+        super().__init__("AclNnGather")
+
+    def infer_result(self, x, dim, index):
+        return torch.ops.aten.gather.default(x, dim, index)
+
+
+class InplaceScatter(Operator):
+    def __init__(self):
+        super().__init__("InplaceScatter")
+
+    def infer_result(self, x, dim, index, src):
+        return torch.ops.atb.scatter_inplace.default(x, dim, index, src)

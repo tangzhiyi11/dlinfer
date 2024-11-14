@@ -398,6 +398,13 @@ class GtScalarParam:
 
 
 @dataclass
+class GeScalarParam:
+    name: str = ""
+    value: float = 1.0
+    dtype: str = "FLOAT"
+
+
+@dataclass
 class ArangeParam:
     name: str = ""
     start: int = 0
@@ -496,6 +503,24 @@ class AclNnSliceParam:
 class IndexSelectParam:
     name: str = ""
     dim: int = 0
+
+
+@dataclass
+class AclNnOnlyNameParam:
+    name: str = ""
+
+
+@dataclass
+class AclNnGatherParam:
+    name: str = ""
+    dim: int = 0
+
+
+@dataclass
+class AclNnInplaceScatterParam:
+    name: str = ""
+    dim: int = 0
+    reduceType: int = 0
 
 
 def custom_asdict_factory(data):

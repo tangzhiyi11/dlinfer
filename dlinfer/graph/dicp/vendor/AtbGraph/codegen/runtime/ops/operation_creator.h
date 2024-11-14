@@ -37,6 +37,8 @@ static std::map<std::string, OperationCreateFunc> g_funcMap = {
     {"AclNnPowTensorTensorOperation", &AclNnPowTensorTensorOperationCreate},
     {"AclNnMaxOperation", &AclNnMaxOperationCreate},
     {"AclNnReciprocalOperation", &AclNnReciprocalOperationCreate},
+    {"AclNnGatherOperation", &AclNnGatherOperationCreate},
+    {"AclNnGeScalarOperation", &AclNnGeScalarOperationCreate},
     {"AclNnGtScalarOperation", &AclNnGtScalarOperationCreate},
     {"AclNnSWhereOperation", &AclNnSWhereOperationCreate},
     {"AclNnArangeOperation", &AclNnArangeOperationCreate},
@@ -49,6 +51,11 @@ static std::map<std::string, OperationCreateFunc> g_funcMap = {
     {"AclNnSoftmaxOperation", &AclNnSoftmaxOperationCreate},
     {"AllReduceOperation", &AllReduceOperationCreate},
     {"AclNnTopkOperation", &AclNnTopkOperationCreate},
+    {"AclNnAddOperation", &AclNnAddOperationCreate},
+    {"AclNnSubOperation", &AclNnSubOperationCreate},
+    {"AclNnDivOperation", &AclNnDivOperationCreate},
+    {"AclNnMulOperation", &AclNnMulOperationCreate},
+    {"AclNnInplaceScatterOperation", &AclNnInplaceScatterOperationCreate},
 };
 
 atb::Operation* CreateOperation(const std::string& opName, const nlohmann::json& paramJson);

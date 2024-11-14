@@ -72,6 +72,10 @@ class GraphTransformer:
                 try:
                     fake_value = n.target(*n.args, **n.kwargs)
                 except Exception as e:
+                    import pdb
+
+                    pdb.set_trace()
+                    pass
                     raise RuntimeError(f"call function: {n.target} failed!")
             elif n.op == "get_attr":
                 target_atoms = n.target.split(".")

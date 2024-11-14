@@ -265,6 +265,7 @@ void Model::BuildNodeVariantPack(int nodeId) {
             auto inputIdx = node.inplaceIndices[i];
             node.variantPack.outTensors.at(i) = node.variantPack.inTensors.at(inputIdx);
             *node.outTensors.at(i) = node.variantPack.outTensors.at(i);
+            std::cout << "############## in hasInplaceOutputs" << std::endl;
             continue;
         }
 

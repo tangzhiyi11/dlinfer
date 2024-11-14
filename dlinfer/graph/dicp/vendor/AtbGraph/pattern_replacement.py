@@ -73,3 +73,43 @@ class TorchAllreduce(BackendPatternBase):
     @staticmethod
     def replacement(x, group):
         return torch.ops.atb.allreduce.default(x, "sum")
+
+
+# @register_torch_pattern_1
+# class InplaceCopy(BackendPatternBase):
+#     @staticmethod
+#     def pattern(src, dst):
+#         copy = torch.ops.aten.copy_.default(dst, src)
+#         return copy
+
+#     @staticmethod
+#     def replacement(src, dst):
+#         return src
+
+
+@register_torch_pattern_1
+class IndexPutScalar(BackendPatternBase):
+    @staticmethod
+    def pattern(scalar_value, dtype, layout, device, x, indices):
+        scalar_tensor = torch.ops.aten.scalar_tensor.default(
+            scalar_value, dtype=dtype, layout=layout, device=device
+        )
+        index_put = torch.ops.aten.index_put.default(x, indices, scalar_tensor)
+        return index_put
+
+    @staticmethod
+    def replacement(scalar_value, dtype, layout, device, x, indices):
+        return src
+
+
+@register_torch_pattern_1
+class InplaceScatter(BackendPatternBase):
+    @staticmethod
+    def pattern(x, dim, index, src):
+        scatter = torch.ops.aten.scatter.src(x, dim, index, src)
+        copy = torch.ops.aten.copy_.default(x, scatter)
+        return copy
+
+    @staticmethod
+    def replacement(x, dim, index, src):
+        return torch.ops.atb.scatter_inplace.default(x, dim, index, src)

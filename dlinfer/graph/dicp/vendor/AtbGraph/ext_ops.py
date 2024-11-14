@@ -56,3 +56,25 @@ def atb_allreduce_impl(x, reduce_type):
     all_reduce = torch.ops._c10d_functional.all_reduce.default(x, reduce_type, 0)
     wait_tensor = torch.ops._c10d_functional.wait_tensor.default(all_reduce)
     return wait_tensor
+
+
+# atb inplace scatter
+@torch._custom_op.impl.custom_op("atb::scatter_inplace")
+def scatter_inplace(
+    x: Tensor,
+    dim: int,
+    index: Tensor,
+    src: Tensor,
+) -> Tensor: ...
+
+
+@scatter_inplace.impl_abstract()
+def scatter_inplace_abstract(x, dim, index, src):
+    return x
+
+
+@scatter_inplace.impl(["cpu", "cuda"])
+def scatter_inplace_impl(x, dim, index, src):
+    scatter = torch.ops.aten.scatter.src(x, dim, index, src)
+    copy = torch.ops.aten.copy_.default(x, scatter)
+    return copy

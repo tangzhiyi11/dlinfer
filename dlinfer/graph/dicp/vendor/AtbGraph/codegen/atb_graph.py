@@ -339,41 +339,6 @@ def parse_graph(
     py_output_names,
 ):
     ## define new graph
-    # inplace replace
-    inplace_replace = {}
-    inplace_tensor_to_real_tensor = {}
-    for name in list(graph.nodes.keys()):
-        node = graph.nodes[name]
-        if node.op_type == "inplaceOperation":
-            if node.input_index != -1:
-                inplace_replace[node.outputs[0]] = (
-                    f"{node.inputs[0]}__{node.input_index}"
-                )
-            else:
-                inplace_replace[node.outputs[0]] = node.inputs[0]
-            if node.target_index != -1:
-                inplace_tensor_to_real_tensor[inplace_replace[node.outputs[0]]] = (
-                    f"{node.target}__{node.target_index}"
-                )
-            else:
-                inplace_tensor_to_real_tensor[inplace_replace[node.outputs[0]]] = (
-                    node.target
-                )
-            del graph.nodes[name]
-    for name in graph.nodes.keys():
-        node = graph.nodes[name]
-        if not isinstance(node, GraphOpearation):
-            for idx, input in enumerate(node.inputs):
-                if input in inplace_replace.keys():
-                    node.inputs[idx] = inplace_replace[input]
-            for idx, output in enumerate(node.outputs):
-                if output in inplace_replace.keys():
-                    node.outputs[idx] = inplace_replace[output]
-        else:
-            for idx, output in enumerate(node.outputs):
-                if output in inplace_replace.keys():
-                    node.outputs[idx] = inplace_replace[output]
-
     # get tuple repalce
     tuple_replace = {}
     for name in list(graph.nodes.keys()):
@@ -542,14 +507,6 @@ def parse_graph(
         graph_hosts = list(set(graph_hosts))
 
         graph_inputs = [x for x in graph_inputs if x not in graph_outputs]
-        for k, v in inplace_tensor_to_real_tensor.items():
-            v_in_input = v in graph_inputs
-            if not v_in_input:
-                while v in view_replace_name_dict.keys() and not v_in_input:
-                    v = view_replace_name_dict[v]
-                    v_in_input = v in graph_inputs
-            if v_in_input and k not in graph_node.outputs:
-                graph_node.outputs.append(k)
 
         graph_internals = [
             x
@@ -579,16 +536,6 @@ def parse_graph(
                 graph_node.add_inplace_output(output_idx, input_idx)
 
     ## run graph
-    inplace_tensor_with_reshape = {}
-    for inplace_tensor, target_tensor in inplace_tensor_to_real_tensor.items():
-        if target_tensor in getitem_replace.keys():
-            target_tensor = getitem_replace[target_tensor]
-        if target_tensor in view_replace.keys():
-            target_shape = view_replace[target_tensor].target_shape
-            while target_tensor in view_replace.keys():
-                target_tensor = view_replace[target_tensor].inputs[0]
-            inplace_tensor_with_reshape[target_tensor] = target_shape
-        inplace_tensor_to_real_tensor[inplace_tensor] = target_tensor
 
     all_tensors = []
     host_tensors = []
@@ -616,8 +563,6 @@ def parse_graph(
                 node_hosts.append(
                     {"nodeId": node_count, "tensorId": ti, "tensorName": t_name}
                 )
-            # elif t_name in node_inputs_count.keys():
-            #     node_inputs_count[t_name] = node_inputs_count[t_name] + 1
             if t_name in node_inputs_count.keys():
                 node_inputs_count[t_name] = node_inputs_count[t_name] + 1
         node_count = node_count + 1
@@ -627,9 +572,6 @@ def parse_graph(
 
     node_outputs = copy.deepcopy(output_names)
     node_internals = []
-    for k, v in inplace_tensor_to_real_tensor.items():
-        if v in node_inputs and k not in node_outputs:
-            node_outputs.append(k)
     for tensor in all_tensors:
         if (
             tensor not in node_inputs
@@ -649,8 +591,8 @@ def parse_graph(
         output_data_nodes,
         input_data_nodes,
         node_outputs,
-        inplace_tensor_to_real_tensor,
-        inplace_tensor_with_reshape,
+        {},
+        {},
     )
 
     for idx, tensor in enumerate(py_output_names):

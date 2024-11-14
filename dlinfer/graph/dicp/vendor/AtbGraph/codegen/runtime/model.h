@@ -25,7 +25,7 @@ T getValue(const nlohmann::json& node, const std::string& key) {
     } catch (const std::exception& e) {
         DICP_LOG(ERROR) << "Error: " << e.what();
         DICP_LOG(ERROR) << "JSON Node: " << node.dump(4);
-        throw std::runtime_error("getValue failed!");
+        throw std::runtime_error("getValue failed! expected key is " + key + ".");
     }
 }
 
