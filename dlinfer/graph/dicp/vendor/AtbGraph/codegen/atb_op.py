@@ -8,12 +8,12 @@ from torch._inductor.utils import IndentedBuffer
 from dlinfer.graph.dicp.vendor.AtbGraph.codegen import atb_infer_param as infer_param
 from dlinfer.graph.dicp.vendor.AtbGraph.codegen.atb_graph import (
     Operation,
-    SqueezeOperation,
+    # SqueezeOperation,
     GetItemOperation,
     GraphOpearation,
-    UnsqueezeOperation,
-    InplaceOperation,
-    ViewOperation,
+    # UnsqueezeOperation,
+    # InplaceOperation,
+    # ViewOperation,
     TupleOperation,
 )
 from dlinfer.graph.dicp.vendor.AtbGraph.codegen.utils import (
@@ -711,78 +711,78 @@ class AtbOverrides:
         op.set_output([name])
         return op
 
-    # def View(name, x, size):
-    #     op = Operation(name, "CustomViewOperation")
-    #     param = infer_param.ViewParam()
-    #     param.viewShape = size
+    def View(name, x, size):
+        op = Operation(name, "CustomViewOperation")
+        param = infer_param.ViewParam()
+        param.viewShape = size
 
-    #     op.set_input([x])
-    #     op.set_param(param)
-    #     op.set_output([name])
-    #     op.has_inplace_output = True
-    #     op.add_inplace_output(0, 0)
-    #     op.is_reshape_op = True
-    #     return op
-
-    # def Unsqueeze(name, x, dim):
-    #     op = Operation(name, "CustomUnsqueezeOperation")
-    #     param = infer_param.UnsqueezeParam()
-    #     param.unsqueezeDim = [dim]
-
-    #     op.set_input([x])
-    #     op.set_param(param)
-    #     op.set_output([name])
-    #     op.has_inplace_output = True
-    #     op.add_inplace_output(0, 0)
-    #     op.is_reshape_op = True
-    #     return op
-
-    # def Squeeze(name, x, dim):
-    #     op = Operation(name, "CustomSqueezeOperation")
-    #     param = infer_param.SqueezeParam()
-    #     param.squeezeDim = [dim]
-
-    #     op.set_input([x])
-    #     op.set_param(param)
-    #     op.set_output([name])
-    #     op.has_inplace_output = True
-    #     op.add_inplace_output(0, 0)
-    #     op.is_reshape_op = True
-    #     return op
-
-    def View(name, input, size):
-        op = ViewOperation(name)
-        op.add_input(input)
-        op.add_output(name)
-        op.target_shape = size
-        op.target_reshape_info = {
-            "reshapeType": "view",
-            "dimNum": len(size),
-            "dims": size,
-        }
+        op.set_input([x])
+        op.set_param(param)
+        op.set_output([name])
+        op.has_inplace_output = True
+        op.add_inplace_output(0, 0)
+        op.is_reshape_op = True
         return op
 
-    def Unsqueeze(name, input, dim):
-        op = UnsqueezeOperation(name)
-        op.add_input(input)
-        op.add_output(name)
-        op.dim = [dim]
-        op.target_reshape_info = {
-            "reshapeType": "unsqueeze",
-            "dim": [dim],
-        }
+    def Unsqueeze(name, x, dim):
+        op = Operation(name, "CustomUnsqueezeOperation")
+        param = infer_param.UnsqueezeParam()
+        param.unsqueezeDim = [dim]
+
+        op.set_input([x])
+        op.set_param(param)
+        op.set_output([name])
+        op.has_inplace_output = True
+        op.add_inplace_output(0, 0)
+        op.is_reshape_op = True
         return op
 
-    def Squeeze(name, input, dim):
-        op = SqueezeOperation(name)
-        op.add_input(input)
-        op.add_output(name)
-        op.dim = [dim]
-        op.target_reshape_info = {
-            "reshapeType": "squeeze",
-            "dim": [dim],
-        }
+    def Squeeze(name, x, dim):
+        op = Operation(name, "CustomSqueezeOperation")
+        param = infer_param.SqueezeParam()
+        param.squeezeDim = [dim]
+
+        op.set_input([x])
+        op.set_param(param)
+        op.set_output([name])
+        op.has_inplace_output = True
+        op.add_inplace_output(0, 0)
+        op.is_reshape_op = True
         return op
+
+    # def View(name, input, size):
+    #     op = ViewOperation(name)
+    #     op.add_input(input)
+    #     op.add_output(name)
+    #     op.target_shape = size
+    #     op.target_reshape_info = {
+    #         "reshapeType": "view",
+    #         "dimNum": len(size),
+    #         "dims": size,
+    #     }
+    #     return op
+
+    # def Unsqueeze(name, input, dim):
+    #     op = UnsqueezeOperation(name)
+    #     op.add_input(input)
+    #     op.add_output(name)
+    #     op.dim = [dim]
+    #     op.target_reshape_info = {
+    #         "reshapeType": "unsqueeze",
+    #         "dim": [dim],
+    #     }
+    #     return op
+
+    # def Squeeze(name, input, dim):
+    #     op = SqueezeOperation(name)
+    #     op.add_input(input)
+    #     op.add_output(name)
+    #     op.dim = [dim]
+    #     op.target_reshape_info = {
+    #         "reshapeType": "squeeze",
+    #         "dim": [dim],
+    #     }
+    #     return op
 
     def ReduceSum(name, x, dim):
         op = Operation(name, "ReduceOperation")
