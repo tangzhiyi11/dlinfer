@@ -17,4 +17,20 @@ namespace dicp {
         if (atbStatus != atb::NO_ERROR) {                               \
         }                                                               \
     } while (0)
+
+#define DESTROY_OPERATION(operation)                              \
+    do {                                                          \
+        atb::Status atbStatus = atb::DestroyOperation(operation); \
+        if (atbStatus != atb::NO_ERROR) {                         \
+            return atbStatus;                                     \
+        }                                                         \
+    } while (0)
+
+#define DESTROY_OPERATION_NO_RETURN(operation)                    \
+    do {                                                          \
+        atb::Status atbStatus = atb::DestroyOperation(operation); \
+        if (atbStatus != atb::NO_ERROR) {                         \
+        }                                                         \
+    } while (0)
+
 }  // namespace dicp

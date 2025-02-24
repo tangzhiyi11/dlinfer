@@ -29,6 +29,15 @@ namespace dicp {
         }                                                                                                                         \
     } while (0)
 
+#define DICP_CHECK_ACL_RET(call)                                                                                                  \
+    do {                                                                                                                          \
+        int ret = (call);                                                                                                         \
+        if (ret != ACL_SUCCESS) {                                                                                                         \
+            DICP_LOG(ERROR) << "Error: " << #call << " failed with return code " << ret << " at " << __FILE__ << ":" << __LINE__; \
+            throw std::runtime_error("ACL call failed");                                                                          \
+        }                                                                                                                         \
+    } while (0)
+
 template <typename T>
 std::string svectorToString(const atb::SVector<T>& vec, const std::string& delimiter = ", ", const std::string& prefix = "[", const std::string& suffix = "]") {
     if (vec.empty()) {

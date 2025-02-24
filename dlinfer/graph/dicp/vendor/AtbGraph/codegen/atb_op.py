@@ -67,6 +67,26 @@ class AtbOverrides:
         op.set_output([name])
         return op
 
+    def LinearAllReduceV2(name, x, weight, bias):
+        op = Operation(name, "LinearParallelOperationV2")
+        param = infer_param.LinearParallelParam()
+
+        param.transWeight = True
+        param.rank = dist.get_rank()
+        param.rankSize = dist.get_world_size()
+        param.rankRoot = 0
+        param.hasResidual = False
+        param.parallelType = infer_param.ParallelType.LINEAR_ALL_REDUCE
+        param.backend = "lccl"
+
+        if bias:
+            op.set_input([x, weight, bias])
+        else:
+            op.set_input([x, weight])
+        op.set_param(param)
+        op.set_output([f"{name}__0", f"{name}__1"])
+        return op
+
     def AllReduce(name, x, reduce_type):
         op = Operation(name, "AllReduceOperation")
         param = infer_param.AllReduceParam()

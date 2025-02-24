@@ -647,7 +647,7 @@ def parse_graph(
             node_internals.append(tensor)
     graph.set_inputs(node_inputs)
     graph.set_outputs(node_outputs)
-    graph.set_internals(node_internals)
+    graph.set_internals(sorted(node_internals))
     graph.set_hosts(node_hosts)
     for name in graph.nodes.keys():
         graph.nodes[name] = graph.nodes[name].build()

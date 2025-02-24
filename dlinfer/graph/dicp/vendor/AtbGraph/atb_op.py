@@ -36,6 +36,15 @@ class LinearAllReduce(Operator):
             out = out + bias
         return out
 
+class LinearAllReduceV2(Operator):
+    def __init__(self):
+        super().__init__("LinearAllReduceV2")
+
+    def infer_result(self, x, weight, bias):
+        out = torch.matmul(x, weight.t())
+        if bias:
+            out = out + bias
+        return out, torch.empty_like(out)
 
 class AllReduce(Operator):
     def __init__(self):

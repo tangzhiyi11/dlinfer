@@ -48,12 +48,12 @@ def allreduce(
 
 @allreduce.impl_abstract()
 def atb_allreduce_abstract(x, reduce_type):
-    return torch.ops._c10d_functional.all_reduce.default(x, reduce_type, 0)
+    return torch.ops._c10d_functional.all_reduce.default(x, reduce_type, "default")
 
 
 @allreduce.impl(["cpu", "cuda"])
 def atb_allreduce_impl(x, reduce_type):
-    all_reduce = torch.ops._c10d_functional.all_reduce.default(x, reduce_type, 0)
+    all_reduce = torch.ops._c10d_functional.all_reduce.default(x, reduce_type, "default")
     wait_tensor = torch.ops._c10d_functional.wait_tensor.default(all_reduce)
     return wait_tensor
 
