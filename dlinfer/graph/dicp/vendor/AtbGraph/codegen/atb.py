@@ -130,7 +130,7 @@ class AtbCodegen(torch.fx.Interpreter):
                 from dlinfer.graph.dicp.dynamo_bridge.compile import AsyncCompileKernel
                 from dlinfer.graph.dicp.vendor.AtbGraph.compile_job import AtbCompileJob
                 
-                # print('### codegen python file path: ', os.path.abspath(__file__))
+                print('### codegen python file path: ', os.path.abspath(__file__))
 
                 aten = torch.ops.aten
                 assert_size_stride = torch._C._dynamo.guards.assert_size_stride
@@ -139,6 +139,30 @@ class AtbCodegen(torch.fx.Interpreter):
                     if not torch.allclose(a, b, atol=atol, rtol=rtol, equal_nan=True):
                         import pdb;pdb.set_trace()
                         pass
+                
+                def params_dict():
+                    params_dict = {}
+                    with open('/data/tangzhiyi/fixed_model/params.txt', 'r') as f:
+                        for line in f:
+                            key, value = line.split()
+                            params_dict[key] = value
+                    return params_dict
+
+                def cache_dict():
+                    cache_dict = {}
+                    with open('/data/tangzhiyi/fixed_model/cache.txt', 'r') as f:
+                        for line in f:
+                            key, value = line.split()
+                            cache_dict[key] = value
+                    return cache_dict
+
+                def inputs_dict():
+                    inputs_dict = {}
+                    with open('/data/tangzhiyi/fixed_model/inputs.txt', 'r') as f:
+                        for line in f:
+                            key, value = line.split()
+                            inputs_dict[key] = value
+                    return inputs_dict
             """,
             strip=True,
         )
@@ -223,9 +247,35 @@ class AtbCodegen(torch.fx.Interpreter):
         call_body.writeline(
             """param = f'{{ \"symInputs\": [{",".join(symInputs)}], \"hostTensors\": [{",".join(hostTensors)}] }}'"""
         )
+        call_body.writeline(f"""f = open('/data/tangzhiyi/fixed_model/params_map.txt', 'w')""")
+        call_body.writeline(f"""inputs_2 = list(args)""")
         call_body.writeline(f"""inputs = [{','.join(graph_input_names)}]""")
-
         call_body.writeline(f"""outputs = [{','.join(graph_output_names)}]""")
+        call_body.writeline(f"""graph_input_names = {str(self.args)}""")
+        call_body.writeline(f"""marked_input = []""")
+        call_body.writeline(f"""for key, value in params_dict().items():""")
+        call_body.writeline(f"""    for idx, input in enumerate(inputs_2):""")
+        call_body.writeline(f"""        if not isinstance(input, int) and str(input.data_ptr()) == value:""")
+        call_body.writeline(f"""            graph_input = graph_input_names[idx]""")
+        call_body.writeline(f"""            #print(f"{{graph_input}} = {{key}}")""")
+        call_body.writeline(f"""            marked_input.append(graph_input)""")
+        call_body.writeline(f"""            f.write(f"{{graph_input}} = {{key}}\\n")""")
+        call_body.writeline(f"""for key, value in cache_dict().items():""")
+        call_body.writeline(f"""    for idx, input in enumerate(inputs_2):""")
+        call_body.writeline(f"""        if not isinstance(input, int) and str(input.data_ptr()) == value:""")
+        call_body.writeline(f"""            graph_input = graph_input_names[idx]""")
+        call_body.writeline(f"""            #print(f"{{graph_input}} = {{key}}")""")
+        call_body.writeline(f"""            marked_input.append(graph_input)""")
+        call_body.writeline(f"""            f.write(f"{{graph_input}} = {{key}}\\n")""")
+        call_body.writeline(f"""for key, value in inputs_dict().items():""")
+        call_body.writeline(f"""    for idx, input in enumerate(inputs_2):""")
+        call_body.writeline(f"""        if not isinstance(input, int) and str(input.data_ptr()) == value:""")
+        call_body.writeline(f"""            graph_input = graph_input_names[idx]""")
+        call_body.writeline(f"""            #print(f"{{graph_input}} = {{key}}")""")
+        call_body.writeline(f"""            marked_input.append(graph_input)""")
+        call_body.writeline(f"""            f.write(f"{{graph_input}} = {{key}}\\n")""")
+        call_body.writeline(f"""f.close()""")
+        call_body.writeline("import pdb;pdb.set_trace()")
         call_body.writeline("kernel_cpp_0(inputs, outputs, param)")
 
         del_args = [f"del {x}" for x in self.args if x not in self.py_output_names]
