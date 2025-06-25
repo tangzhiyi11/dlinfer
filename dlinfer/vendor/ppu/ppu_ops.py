@@ -129,6 +129,20 @@ def fill_kv_cache(
 ) -> Tuple[Tensor, Tensor]:
     kv_indices = kv_indices.squeeze(-1)
     kv_scale  = torch.tensor(1., device=key.device)
+
+    # ix
+    key_cache = key_cache.permute(0, 2, 1, 3)
+    value_cache = value_cache.permute(0, 2, 1, 3)
+
+    custom_ops.reshape_and_cache_flash(
+        key, value, key_cache, value_cache, kv_indices, "auto", kv_scale, kv_scale
+    )
+    key_cache = key_cache.permute(0, 2, 1, 3)
+    value_cache = value_cache.permute(0, 2, 1, 3)
+    return key_cache, value_cache
+
+    kv_indices = kv_indices.squeeze(-1)
+    kv_scale  = torch.tensor(1., device=key.device)
     custom_ops.reshape_and_cache(
         key, value, key_cache, value_cache, kv_indices, "auto", kv_scale, kv_scale
     )
