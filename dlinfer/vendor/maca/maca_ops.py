@@ -13,6 +13,8 @@ from dlinfer.utils.type_annotation import Tensor, Optional, Sequence, Tuple
 from .fused_moe import fused_experts
 from .maca_extension import ops as maca_ext_ops
 
+from typing import Any
+
 __all__ = [
     "add_rms_norm",
     "apply_rotary_pos_emb",
@@ -199,6 +201,55 @@ def fill_kv_cache(
     v_scales_zeros: Sequence[Optional[Tensor]],
     quant_bits: int,
 ) -> Tuple[Tensor, Tensor]:
+
+    kv_indices = kv_indices.squeeze(-1)
+    maca_ext_ops.reshape_and_cache_new(
+                                       key,
+                                       value,
+                                       key_cache,
+                                       value_cache,
+                                       kv_indices,
+                                       "auto",
+                                       1.0,
+                                       1.0,
+    )
+    return key_cache, value_cache
+
+    block_num, num_heads, block_size, v_head_size = value_cache.shape
+    k_head_size = key.size(-1)
+
+    if k_head_size != v_head_size:
+        kv_indices = kv_indices.squeeze(-1)
+        key_cache = key_cache.reshape(-1,1,576)
+        key_cache[kv_indices] = key
+        return key_cache, value_cache
+    else:
+        kv_indices = kv_indices.squeeze(-1)
+        value_cache = value_cache.transpose(dim0=1, dim1=2).reshape(-1, num_heads, v_head_size)
+        key_cache = key_cache.transpose(dim0=1, dim1=2).reshape(-1, num_heads, v_head_size)
+        key_cache[kv_indices] = key
+        value_cache[kv_indices] = value
+        value_cache = value_cache.reshape(block_num, block_size, num_heads, v_head_size).transpose(dim0=1, dim1=2).contiguous()
+        key_cache = key_cache.reshape(block_num, block_size, num_heads, v_head_size).transpose(dim0=1, dim1=2).contiguous()
+        return key_cache, value_cache
+
+        from vllm import _custom_ops as custom_ops
+        kv_indices = kv_indices.squeeze(-1)
+        kv_scale = torch.tensor(1.0)
+        custom_ops.reshape_and_cache_flash_new(
+            key, value, key_cache, value_cache, kv_indices, "auto", kv_scale, kv_scale
+        )
+        return key_cache, value_cache
+
+
+    import pdb;pdb.set_trace()
+    pass
+    kv_indices = kv_indices.squeeze(-1)
+    key_cache = key_cache.reshape(-1,1,576)
+    key_cache[kv_indices] = key
+    return key_cache, value_cache
+
+
     kv_indices = kv_indices.squeeze(-1)
     maca_ext_ops.reshape_and_cache_new(
         key, value, key_cache, value_cache, kv_indices, "auto", 1.0, 1.0
@@ -223,7 +274,20 @@ def paged_decode_attention(
     kv_scales: Optional[Tensor],
     kv_zeros: Optional[Tensor],
     quant_bits: Optional[int],
+    flashinfer_wrapper: Optional[Any] = None,
 ) -> Tensor:
+
+    if flashinfer_wrapper is not None:
+        output = torch.empty_like(query)
+        flashinfer_wrapper.run(
+            query,
+            (key_cache, value_cache),
+            out=output,
+        )
+        return output
+
+
+
     if alibi_slopes is not None:
         raise RuntimeError("paged_decode_attention does not support alibi_slopes yet")
     if softmax_scale is None:
