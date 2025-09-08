@@ -1,0 +1,1727 @@
+# Copyright (c) OpenMMLab. All rights reserved.
+
+import math
+from copy import deepcopy
+from enum import Enum, auto
+from os import getenv
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+import torch
+import torch.nn.functional as F
+from torch import nn
+
+from tqdm import tqdm
+
+import lmdeploy.pytorch.distributed as dist
+from lmdeploy.pytorch.distributed import get_dist_manager, get_dp_world_rank, get_ep_world_rank, get_tp_world_rank
+from lmdeploy.pytorch.model_inputs import StepContext, StepContextManager, get_step_ctx_manager
+from lmdeploy.pytorch.nn import ApplyRotaryEmb, Attention, RMSNorm, RopeType, SiluAndMul, build_rotary_embedding
+from lmdeploy.pytorch.nn.eplb import EPLBDispatchInfo, EPLBManager
+from lmdeploy.pytorch.nn.linear import (build_colwise_linear, build_down_linear, build_gateup_linear, build_o_proj,
+                                        build_rowwise_linear)
+from lmdeploy.pytorch.nn.moe import MoeType, SoftmaxTopK, build_fused_moe
+from lmdeploy.pytorch.nn.rotary_embedding import YarnParameters
+from lmdeploy.pytorch.weight_loader.model_weight_loader import load_weight
+
+from lmdeploy.pytorch.models.utils.cudagraph import CudaGraphMixin
+from lmdeploy.pytorch.kernels.dlinfer.w8a8_kernels import dynamic_quant, linear_w8a8
+from vllm._custom_ops import cutlass_scaled_batch_mm as vllm_scaled_bmm_int8
+from vllm._custom_ops import scaled_int8_quant as vllm_scaled_int8_quant
+import vllm
+
+from sglang.srt.layers.rotary_embedding import get_rope, get_rope_wrapper
+from sglang.srt.layers.activation import SiluAndMul as sgl_SiluAndMul
+
+global_cnt = 0
+import pickle
+
+
+def dump_tensor(tensor, name):
+    with open(f"/datapool/tangzhiyi/mx_deepseek/tmp_data/{name}.pkl", "wb") as f:
+        pickle.dump(tensor.cpu(), f)
+
+def load_tensor(name):
+    with open(f"/datapool/tangzhiyi/mx_deepseek/tmp_data/{name}.pkl", "rb") as f:
+        loaded_tensor = pickle.load(f).cuda()
+    return loaded_tensor
+
+def has_nan_or_inf(tensor):
+    """
+    检查输入张量中是否包含NaN或Inf值
+    
+    参数:
+        tensor (torch.Tensor): 输入张量
+        
+    返回:
+        bool: 如果存在NaN或Inf返回True，否则返回False
+    """
+    # 检查NaN值
+    torch.cuda.synchronize()
+    has_nan = torch.isnan(tensor).any()
+    # 检查正负无穷大
+    has_inf = torch.isinf(tensor).any()
+    return has_nan.item() or has_inf.item()
+
+# microbatch
+class ExecType(Enum):
+    """Batch ecex type."""
+    One = auto()
+    Two0101 = auto()
+    Two0110 = auto()
+    TwoLikeOne = auto()
+    TwoPrefill = auto()
+    TwoDecode = auto()
+
+
+class BatchWorker:
+
+    def __init__(self, tag: str, generator):
+        self._tag = tag
+        self._generator = generator
+        self._count = 0
+        self.output = None
+
+    def next(self):
+        assert not self.done
+
+        try:
+            next(self._generator)
+        except StopIteration as e:
+            assert e.value is not None
+            self.output = e.value
+
+        self._count += 1
+
+    @property
+    def done(self):
+        return self.output is not None
+
+
+def execute_batch(inputs: list, fn, delta_stages: int = 0, exec_type: ExecType = ExecType.One, extern_tag: str = ''):
+    worker_list = [BatchWorker(str(idx), fn(**input, tag=str(idx) + extern_tag)) for idx, input in enumerate(inputs)]
+
+    if exec_type == ExecType.One:
+        assert len(inputs) == 1
+        i = 0
+        while not worker_list[0].done:
+            worker_list[0].next()
+            i += 1
+
+    if exec_type == ExecType.TwoLikeOne:
+        assert len(inputs) == 2
+        i = 0
+        while not worker_list[0].done:
+            worker_list[0].next()
+            i += 1
+        i = 0
+        while not worker_list[1].done:
+            worker_list[1].next()
+            i += 1
+
+    if exec_type == ExecType.Two0101:
+        assert len(inputs) == 2
+
+        for _ in range(delta_stages):
+            worker_list[0].next()
+        i = 0
+        while not worker_list[0].done:
+            worker_list[0].next()
+            worker_list[1].next()
+            i += 1
+
+        while not worker_list[1].done:
+            worker_list[1].next()
+
+    if exec_type == ExecType.Two0110:
+        assert len(inputs) == 2
+
+        for _ in range(delta_stages):
+            worker_list[0].next()
+        i = 0
+        while not worker_list[0].done:
+            if i % 2 == 0:
+                worker_list[0].next()
+                worker_list[1].next()
+            else:
+                worker_list[1].next()
+                worker_list[0].next()
+            i += 1
+
+        while not worker_list[1].done:
+            worker_list[1].next()
+
+    if exec_type == ExecType.TwoPrefill:
+        """
+        before:
+        A-attn0->A-attn1
+        roll:
+        B-attn0->B-attn1->A-dis->A-dis_wait->A-moe->B-dis->B-dis_wait->A-comb->
+        B-moe->(A-share->A-comb_wait)->B-comb->A-attn0->A-attn1->(B-share->B-comb_wait)
+        after:
+        B-dis_wait->B-moe->B-comb->B-comb_wait and end
+        """
+        assert len(inputs) == 2 and delta_stages in [0, 2]
+
+        for _ in range(2):
+            worker_list[0].next()
+
+        pipeline = [
+            '1-attn0', '1-attn1', '0-dis', '0-dis_wait', '0-moe', '1-dis', '1-dis_wait', '0-comb', '1-moe',
+            '0-share+0-comb_wait', '1-comb', '0-attn0', '0-attn1', '1-share+1-comb_wait'
+        ]
+        pipline_length = len(pipeline)
+        i = 0
+        while not worker_list[0].done:
+            worker_list[int(pipeline[i % pipline_length][0])].next()
+            i += 1
+
+        while not worker_list[1].done:
+            worker_list[1].next()
+
+    if exec_type == ExecType.TwoDecode:
+        """
+        before:
+        A-attn0->A-attn1->(A-dis->A-share)
+        roll:
+        B-attn0->A-dis_wait->A-moe->A-comb->B-attn1->A-comb_wait->(B-dis->B-share)->
+        A-attn0->B-dis_wait->B-moe->B-comb->A-attn1->B-comb_wait->(A-dis->A-share)
+        after:
+        B-dis_wait->B-moe->B-comb->B-comb_wait and end
+        """
+        assert len(inputs) == 2 and delta_stages in [0, 3]
+
+        for _ in range(3):
+            worker_list[0].next()
+
+        pipeline = [
+            '1-attn0', '0-dis_wait', '0-moe', '0-comb', '1-attn1', '0-comb_wait', '1-dis+1-share', '0-attn0',
+            '1-dis_wait', '1-moe', '1-comb', '0-attn1', '1-comb_wait', '0-dis+0-share'
+        ]
+        pipline_length = len(pipeline)
+        i = 0
+        while not worker_list[0].done:
+            worker_list[int(pipeline[i % pipline_length][0])].next()
+            i += 1
+
+        while not worker_list[1].done:
+            worker_list[1].next()
+
+    for worker in worker_list:
+        assert worker.done
+    return [worker.output for worker in worker_list]
+
+
+def get_new_meta(attn_metadata, start_idx: int, end_idx: int):
+    new_attn_metadata = deepcopy(attn_metadata)
+    new_attn_metadata.block_offsets = attn_metadata.block_offsets[start_idx:end_idx, ...]
+    new_attn_metadata.q_start_loc = attn_metadata.q_start_loc[start_idx:end_idx] - attn_metadata.q_start_loc[start_idx]
+    new_attn_metadata.kv_start_loc = attn_metadata.kv_start_loc[start_idx:end_idx] - \
+        attn_metadata.kv_start_loc[start_idx] if attn_metadata.kv_start_loc is not None else None
+    new_attn_metadata.q_seqlens = attn_metadata.q_seqlens[start_idx:end_idx]
+    new_attn_metadata.kv_seqlens = attn_metadata.kv_seqlens[start_idx:end_idx] \
+        if attn_metadata.kv_seqlens is not None else None
+    new_attn_metadata.kv_flatten_size = sum(new_attn_metadata.kv_seqlens.tolist()) \
+        if attn_metadata.kv_flatten_size is not None else None
+    # create buffers for flash mla
+    if attn_metadata.num_splits is not None:
+        Attention.update_meta_flashmla(new_attn_metadata,
+                                       get_step_ctx_manager().current_context().model_config.num_attention_heads)
+    return new_attn_metadata
+
+
+def get_new_rotary_pos_emb(rotary_pos_emb, start_loc, end_loc):
+    new_rotary_pos_emb = (rotary_pos_emb[0][start_loc:end_loc, ...].contiguous(), rotary_pos_emb[1][start_loc:end_loc,
+                                                                                                    ...].contiguous())
+    return new_rotary_pos_emb
+
+
+def get_new_input(hidden_states, rotary_pos_emb, past_key_values, residual, attn_metadata, start_idx, end_idx,
+                  start_loc, end_loc):
+    new_hidden_states = hidden_states[:, start_loc:end_loc, :].contiguous()
+    new_rotary_pos_emb = get_new_rotary_pos_emb(rotary_pos_emb, start_loc, end_loc)
+    new_past_key_values = past_key_values
+    new_residual = residual[:, start_loc:end_loc, :].contiguous() if residual is not None else None
+    new_attn_metadata = get_new_meta(attn_metadata, start_idx, end_idx)
+    return new_hidden_states, new_rotary_pos_emb, new_past_key_values, new_residual, new_attn_metadata
+
+
+def get_split_flags(attn_metadata, num=2):
+    """Split flags for seqlens and startloc, support 2 only."""
+    assert num == 2
+    if attn_metadata.is_decoding:
+        batch_size = attn_metadata.q_start_loc.numel()
+        flag_a = {
+            'start_idx': 0,
+            'end_idx': batch_size // 2,
+            'start_loc': 0,
+            'end_loc': batch_size // 2,
+        }
+        flag_b = {
+            'start_idx': batch_size // 2,
+            'end_idx': batch_size,
+            'start_loc': batch_size // 2,
+            'end_loc': batch_size,
+        }
+    else:
+        q_start_loc = attn_metadata.q_start_loc.tolist()
+        q_seqlens = attn_metadata.q_seqlens.tolist()
+        total_len = sum(q_seqlens)
+        min_diff = total_len
+        split_flag = 1
+        for idx in range(1, len(q_seqlens)):
+            diff = abs(sum(q_seqlens[:idx]) - sum(q_seqlens[idx:]))
+            if diff < min_diff:
+                min_diff = diff
+                split_flag = idx
+        flag_a = {
+            'start_idx': 0,
+            'end_idx': split_flag,
+            'start_loc': q_start_loc[0],
+            'end_loc': q_start_loc[split_flag],
+        }
+        flag_b = {
+            'start_idx': split_flag,
+            'end_idx': len(q_seqlens),
+            'start_loc': q_start_loc[split_flag],
+            'end_loc': q_start_loc[-1] + q_seqlens[-1],
+        }
+    return [flag_a, flag_b]
+
+
+def split_input(hidden_states,
+                rotary_pos_emb,
+                past_key_values,
+                residual,
+                attn_metadata,
+                moe_start_idx,
+                moe_end_idx,
+                num=2):
+    """Split input, support 1 or 2 only."""
+    # one batch
+    if num == 1:
+        input = {
+            'hidden_states': hidden_states,
+            'rotary_pos_emb': rotary_pos_emb,
+            'past_key_values': past_key_values,
+            'residual': residual,
+            'attn_metadata': attn_metadata,
+            'start_idx': moe_start_idx,
+            'end_idx': moe_end_idx
+        }
+        extern_tag = 'D' if attn_metadata.is_decoding else 'P'
+        return [input], ExecType.One, 0, extern_tag
+    else:
+        # two batch or more
+        flag_list = get_split_flags(attn_metadata, num=num)
+
+        inputs = []
+        for flag in flag_list:
+            (hidden_states_splited, rotary_pos_emb_splited, past_key_values_splited, residual_splited,
+             attn_metadata_splited) = get_new_input(hidden_states, rotary_pos_emb, past_key_values, residual,
+                                                    attn_metadata, flag['start_idx'], flag['end_idx'],
+                                                    flag['start_loc'], flag['end_loc'])
+            input = {
+                'hidden_states': hidden_states_splited,
+                'rotary_pos_emb': rotary_pos_emb_splited,
+                'past_key_values': past_key_values,
+                'residual': residual_splited,
+                'attn_metadata': attn_metadata_splited,
+                'start_idx': moe_start_idx,
+                'end_idx': moe_end_idx
+            }
+            inputs.append(input)
+
+        if attn_metadata.is_decoding:
+            exec_type = ExecType.TwoDecode
+            delta_stages = 0
+            extern_tag = 'D'
+        else:
+            exec_type = ExecType.TwoPrefill
+            delta_stages = 0
+            extern_tag = 'P'
+
+        return inputs, exec_type, delta_stages, extern_tag
+
+
+def merge_output(output_list):
+    # one batch
+    if len(output_list) == 1:
+        return output_list[0]
+    # two batch or more
+    hidden_states = torch.concat([output[0] for output in output_list], dim=1)
+    residual = None
+    if output_list[0][1] is not None:
+        residual = torch.concat([output[1] for output in output_list], dim=1)
+    return hidden_states, residual
+
+
+def yarn_get_mscale(scale=1, mscale=1):
+    if scale <= 1:
+        return 1.0
+    return 0.1 * mscale * math.log(scale) + 1.0
+
+
+class DeepseekV2BMM(nn.Module):
+    """Wrapped bmm."""
+
+    def __init__(self, batch: int, in_features: int, out_features: int, dtype: torch.dtype, device: torch.device):
+        super().__init__()
+        batch = self._update_batch(batch)
+
+        weight = self.create_weight(batch, in_features, out_features, dtype=dtype, device=device)
+        weight = torch.nn.Parameter(weight, requires_grad=False)
+        self.register_parameter('weight', weight)
+        weight.weight_loader = self.weight_loader
+
+        self.batch = batch
+        self.in_features = in_features
+        self.out_features = out_features
+        self.dtype = dtype
+        self.device = device
+
+    def _get_tp_world_rank(self):
+        """Get tp world rank."""
+        dist_ctx = get_dist_manager().current_context()
+        if dist_ctx.dp == 1:
+            return get_tp_world_rank()
+        return 1, 0
+
+    def _update_batch(self, batch: int):
+        """Update out features."""
+        world_size, _ = self._get_tp_world_rank()
+        batch = batch // world_size
+        return batch
+
+    def create_weight(self, batch: int, in_features: int, out_features: int, dtype: torch.dtype, device: torch.device):
+        """Create weight."""
+        return torch.empty((batch, in_features, out_features), dtype=dtype, device=device)
+
+    def weight_loader(self, param: nn.Parameter, weight: torch.Tensor):
+        """Weight loader."""
+        world_size, rank = self._get_tp_world_rank()
+        weight = weight.chunk(world_size, 0)[rank]
+        param.data.copy_(weight)
+
+    def forward(self, x: torch.Tensor, output: torch.Tensor):
+        """forward."""
+        torch.bmm(x.transpose(0, 1), self.weight, out=output.transpose(0, 1))
+
+class SGMoEGate(nn.Module):
+    def __init__(
+        self,
+        config,
+        prefix: str = "",
+    ):
+        super().__init__()
+        self.weight = nn.Parameter(
+            torch.ones((config.n_routed_experts, config.hidden_size), dtype=torch.bfloat16)
+        )
+        if config.topk_method == "noaux_tc":
+            self.e_score_correction_bias = nn.Parameter(
+                torch.ones((config.n_routed_experts))
+            )
+        else:
+            self.e_score_correction_bias = None
+
+    def forward(self, hidden_states):
+        logits = F.linear(hidden_states, self.weight, None)
+        return logits
+
+
+class DeepseekV2Attention(nn.Module):
+    """Deepseekv2 attention."""
+
+    def __init__(self, config: Any, dtype: torch.dtype = None, device: torch.device = None):
+        super().__init__()
+        quantization_config = getattr(config, 'quantization_config', None)
+        self.q_lora_rank = config.q_lora_rank
+        self.hidden_size = config.hidden_size
+        self.num_heads = config.num_attention_heads
+        self.qk_rope_head_dim = config.qk_rope_head_dim
+        self.kv_lora_rank = config.kv_lora_rank
+        self.v_head_dim = config.v_head_dim
+        self.qk_nope_head_dim = config.qk_nope_head_dim
+        self.q_head_dim = config.qk_nope_head_dim + config.qk_rope_head_dim
+        num_replicate_kv_heads = getattr(config, 'num_replicate_key_value_heads', 1)
+        num_key_value_heads = getattr(config, 'num_key_value_heads', 1)
+        use_flash_mla = getattr(config, 'use_flash_mla', False)
+
+        if self.q_lora_rank is None:
+            self.q_proj = build_colwise_linear(
+                self.hidden_size,
+                self.num_heads * self.q_head_dim,
+                bias=False,
+                dtype=dtype,
+                device=device,
+                is_tp=True,
+                quant_config=quantization_config,
+                dp_disable_tp=True,
+            )
+        else:
+            self.q_a_proj = build_colwise_linear(
+                self.hidden_size,
+                config.q_lora_rank,
+                bias=config.attention_bias,
+                dtype=dtype,
+                device=device,
+                is_tp=False,
+                quant_config=quantization_config,
+            )
+            self.q_a_layernorm = RMSNorm(config.q_lora_rank,
+                                         1e-6,
+                                         quant_config=None,
+                                         dtype=dtype,
+                                         device=device)
+            self.q_b_proj = build_colwise_linear(
+                config.q_lora_rank,
+                self.num_heads * self.q_head_dim,
+                bias=False,
+                dtype=dtype,
+                device=device,
+                is_tp=True,
+                quant_config=quantization_config,
+                dp_disable_tp=True,
+            )
+
+        self.kv_a_proj_with_mqa = build_colwise_linear(
+            self.hidden_size,
+            config.kv_lora_rank + config.qk_rope_head_dim,
+            bias=config.attention_bias,
+            dtype=dtype,
+            device=device,
+            is_tp=False,
+            quant_config=quantization_config,
+        )
+        self.kv_a_layernorm = RMSNorm(config.kv_lora_rank,
+                                      1e-6,
+                                      quant_config=None,
+                                      dtype=dtype,
+                                      device=device)
+
+        self.kv_b_proj = build_colwise_linear(
+                config.kv_lora_rank,
+                self.num_heads * (config.qk_nope_head_dim + self.v_head_dim),
+                bias=False,
+                dtype=dtype,
+                device=device,
+                is_tp=True,
+                quant_config=quantization_config,
+                dp_disable_tp=True,
+            )
+
+        self.apply_rotary_pos_emb = ApplyRotaryEmb()
+
+        self.softmax_scale = self.q_head_dim**(-0.5)
+
+        if config.rope_scaling is not None:
+            mscale_all_dim = config.rope_scaling.get('mscale_all_dim', 0)
+            scaling_factor = config.rope_scaling['factor']
+            if mscale_all_dim:
+                mscale = yarn_get_mscale(scaling_factor, mscale_all_dim)
+                self.softmax_scale = self.softmax_scale * mscale * mscale
+
+        self.attn_fwd = Attention(self.num_heads,
+                                  config.kv_lora_rank + self.qk_rope_head_dim,
+                                  scale=self.softmax_scale,
+                                  num_kv_heads=num_key_value_heads,
+                                  v_head_size=config.kv_lora_rank,
+                                  num_replicate_kv_heads=num_replicate_kv_heads,
+                                  use_flash_mla=use_flash_mla)
+
+        self.w_kc = None
+        self.w_vc = None
+        self.w_scale = None
+        self.w_kc_scale = None
+        self.w_vc_scale = None
+
+        self.o_proj = build_o_proj(
+            self.num_heads * self.v_head_dim,
+            self.hidden_size,
+            bias=config.attention_bias,
+            dtype=dtype,
+            device=device,
+            is_tp=True,
+            quant_config=quantization_config,
+        )
+
+    def _q_proj(self, hidden_states, num_heads: int, nope_size: int, pe_size: int):
+        """Q proj."""
+        q_len = hidden_states.size(1)
+
+        query_states = hidden_states.new_empty(q_len, num_heads, nope_size + pe_size)
+        # query_states = torch.zeros(q_len, num_heads, nope_size + pe_size, dtype=hidden_states.dtype, device=hidden_states.device)
+
+        if self.q_lora_rank is None:
+            q = self.q_proj(hidden_states)
+        else:
+            q = self.q_b_proj(self.q_a_layernorm(self.q_a_proj(hidden_states)))
+        q = q.view(q_len, num_heads, self.q_head_dim)
+        # q_pe: (q_len, num_heads, qk_rope_head_dim)
+        q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
+        # q_nope: (q_len, num_heads, kv_lora_rank)
+
+        # q_nope_out = query_states[..., :nope_size]
+        # self.kc(q_nope, q_nope_out)
+
+        q_nope_out = torch.bmm(q_nope.transpose(0, 1), self.w_kc)
+        query_states[..., :nope_size] = q_nope_out.transpose(0, 1)
+
+        return query_states, q_pe
+
+    def _kv_proj(self, hidden_states, nope_size: int):
+        """Kv proj."""
+        # (q_len, 1, nope_size + pe_size)
+        # import pdb;pdb.set_trace()
+        key_states = self.kv_a_proj_with_mqa(hidden_states[0, :, None])
+        # (q_len, 1, pe_size)
+        k_pe = key_states[..., nope_size:]
+        # kv_a_layernorm
+        value_states = key_states[..., :nope_size]
+        value_states = self.kv_a_layernorm(value_states)
+        key_states[..., :nope_size] = value_states
+        return key_states, value_states, k_pe
+
+    def _qkv_proj(self, hidden_states: torch.Tensor, num_heads: int):
+        """Qkv proj."""
+        nope_size = self.kv_lora_rank
+        pe_size = self.qk_rope_head_dim
+        query_states, q_pe = self._q_proj(hidden_states, num_heads, nope_size, pe_size)
+        key_states, value_states, k_pe = self._kv_proj(hidden_states, nope_size)
+
+        return query_states, key_states, value_states, q_pe, k_pe
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        positions,
+        rotary_pos_emb,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        attn_metadata: Any = None,
+    ):
+        if attn_metadata.is_decoding or (not attn_metadata.is_unpaged_prefill):
+            return self.forward_absorb(
+                hidden_states,
+                positions,
+                rotary_pos_emb,
+                past_key_value,
+                attn_metadata,
+            )  
+        else:
+            return self.forward_normal(
+                hidden_states,
+                positions,
+                rotary_pos_emb,
+                past_key_value,
+                attn_metadata,
+            )
+
+
+    def forward_absorb(
+        self,
+        hidden_states: torch.Tensor,
+        positions,
+        rotary_pos_emb,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        attn_metadata: Any = None,
+    ):
+        """Rewrite of LlamaAttention.forward."""
+        dist_ctx = get_dist_manager().current_context()
+        if dist_ctx.dp > 1:
+            num_heads = self.num_heads
+        else:
+            world_size = dist_ctx.world_size
+            num_heads = self.num_heads // world_size
+        nope_size = self.kv_lora_rank
+        q_len = hidden_states.size(1)
+
+        # qkv_proj
+        query_states, key_states, value_states, q_pe, k_pe = self._qkv_proj(hidden_states, num_heads=num_heads)
+        q_pe, k_pe = rotary_pos_emb(positions, q_pe, k_pe)
+
+
+
+        query_states[..., nope_size:] = q_pe
+        key_states[..., nope_size:] = k_pe
+
+        attn_output = self.attn_fwd(
+            query_states,
+            key_states,
+            value_states,
+            past_key_value[0],
+            past_key_value[0][..., :nope_size],
+            attn_metadata,
+            k_scales_zeros=None if len(past_key_value) == 2 else past_key_value[2],
+            v_scales_zeros=None if len(past_key_value) == 2 else past_key_value[3],
+            inplace=True,
+        )
+
+        if self.w_vc.dtype == torch.int8:
+            attn_output_quant_val, attn_output_quant_scale, _ = vllm_scaled_int8_quant(attn_output.transpose(0,1).contiguous())
+            attn_bmm_out = vllm_scaled_bmm_int8(a = attn_output_quant_val, b = self.w_vc, scale_a = attn_output_quant_scale, scale_b = self.w_vc_scale, out_dtype = attn_output.dtype)
+        else:
+            attn_bmm_out = torch.bmm(attn_output.transpose(0, 1), self.w_vc)
+
+        attn_output = attn_bmm_out.transpose(0, 1).flatten(-2, -1)[None]
+        attn_output = self.o_proj(attn_output)
+
+        return attn_output
+
+    def forward_normal(
+        self,
+        hidden_states: torch.Tensor,
+        positions,
+        rotary_pos_emb,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        attn_metadata: Any = None,
+    ) -> torch.Tensor:
+        dist_ctx = get_dist_manager().current_context()
+        if dist_ctx.dp > 1:
+            num_heads = self.num_heads
+        else:
+            world_size = dist_ctx.world_size
+            num_heads = self.num_heads // world_size
+        hidden_states = hidden_states.squeeze(0)
+        
+        
+        if self.q_lora_rank is not None:
+            q = self.q_a_proj(hidden_states)
+            q = self.q_a_layernorm(q)
+            q = self.q_b_proj(q).view(-1, num_heads, self.q_head_dim)
+        else:
+            q = self.q_proj(hidden_states)
+            q = q.view(-1, num_heads,self.q_head_dim)
+        _, q_pe = q.split([self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
+
+        latent_cache = self.kv_a_proj_with_mqa(hidden_states)
+
+        kv_a, _ = latent_cache.split([self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
+        latent_cache = latent_cache.unsqueeze(1)
+        kv_a = self.kv_a_layernorm(kv_a.contiguous())
+        kv = self.kv_b_proj(kv_a)
+        kv = kv.view(-1, num_heads, self.qk_nope_head_dim + self.v_head_dim)
+        k_nope = kv[..., : self.qk_nope_head_dim]
+        v = kv[..., self.qk_nope_head_dim :]
+        k_pe = latent_cache[:, :, self.kv_lora_rank :]
+
+        q_pe, k_pe = rotary_pos_emb(positions, q_pe, k_pe)
+        q[..., self.qk_nope_head_dim :] = q_pe
+        k = torch.zeros_like(q)
+        k[..., : self.qk_nope_head_dim] = k_nope
+        k[..., self.qk_nope_head_dim :] = k_pe
+
+        latent_cache[:, :, : self.kv_lora_rank] = kv_a.unsqueeze(1)
+        latent_cache[:, :, self.kv_lora_rank :] = k_pe
+
+        attn_output = self.attn_fwd(
+            q,
+            k,
+            v,
+            past_key_value[0],
+            past_key_value[0][..., :self.kv_lora_rank],
+            attn_metadata,
+            k_scales_zeros=None if len(past_key_value) == 2 else past_key_value[2],
+            v_scales_zeros=None if len(past_key_value) == 2 else past_key_value[3],
+            inplace=True,
+            mla_latent_cache=latent_cache,
+        )
+        attn_output = attn_output.reshape(-1, num_heads * self.v_head_dim)
+        
+        output = self.o_proj(attn_output)
+        output = output.unsqueeze(0)
+
+        return output
+
+
+class MoEGate(nn.Module):
+    """Deepseek Gate."""
+
+    def __init__(self,
+                 config: Any,
+                 dtype: torch.dtype = None,
+                 device: torch.device = None,
+                 info: EPLBDispatchInfo = None):
+        super().__init__()
+        self.config = config
+        self.top_k = config.num_experts_per_tok
+        self.n_routed_experts = config.n_routed_experts
+        self.routed_scaling_factor = config.routed_scaling_factor
+        self.scoring_func = config.scoring_func
+        # self.seq_aux = config.seq_aux
+        self.topk_method = config.topk_method
+        self.n_group = config.n_group
+        self.topk_group = config.topk_group
+        self.norm_topk_prob = config.norm_topk_prob
+        self.renormalize = self.top_k > 1 and self.norm_topk_prob
+
+        # topk selection algorithm
+        self.norm_topk_prob = config.norm_topk_prob
+        self.gating_dim = config.hidden_size
+        self.weight = nn.Parameter(torch.empty((self.n_routed_experts, self.gating_dim), dtype=dtype, device=device))
+        if self.topk_method == 'noaux_tc':
+            self.e_score_correction_bias = nn.Parameter(
+                torch.empty((self.n_routed_experts, ), dtype=dtype, device=device))
+        self.softmax_topk = SoftmaxTopK(self.top_k)
+        self.fake_eplb = getenv('LMDEPLOY_FAKE_EPLB', 'False').lower() == 'true'
+        self.eplb_dispatch_info = info
+
+    def _compute_scores(self, logits: torch.Tensor):
+        """Compute scores."""
+        if self.scoring_func == 'softmax':
+            scores = logits.softmax(dim=-1, dtype=torch.float32)
+        elif self.scoring_func == 'sigmoid':
+            scores = logits.sigmoid()
+        else:
+            raise NotImplementedError('insupportable scoring function '
+                                      f'for MoE gating: {self.scoring_func}')
+        return scores
+
+    def forward(self, hidden_states: torch.Tensor):
+        """forward."""
+        sequence_length, hidden_dim = hidden_states.shape
+        router_logits = F.linear(hidden_states, self.weight)
+        # return router_logits
+        if self.fake_eplb:
+            # Forcefully manipulate router_logits to simulate expert load balancing (EPLB).
+            # This is a benchmark-only hack to achieve optimal performance metrics.
+            router_logits = torch.randn_like(router_logits)
+
+        if self.topk_method == 'greedy':
+            topk_weight, topk_idx = self.softmax_topk(router_logits)
+        elif self.topk_method == 'group_limited_greedy':
+            scores = router_logits
+            grouped_logits = scores.unflatten(-1, (self.n_group, -1))
+            group_scores = (grouped_logits.max(-1).values)
+            group_idx = torch.topk(group_scores, k=self.topk_group, dim=-1, sorted=False)[1]  # [n, top_k_group]
+            group_mask = torch.zeros_like(group_scores)  # [n, n_group]
+            group_mask.scatter_(1, group_idx, 1)  # [n, n_group]
+            group_mask = ~group_mask.bool()[..., None]
+            grouped_logits = grouped_logits.masked_fill(group_mask, 0.0)
+            scores = grouped_logits.flatten(1, 2)
+            topk_weight, topk_idx = self.softmax_topk(scores)
+        elif self.topk_method == 'noaux_tc':
+            scores = self._compute_scores(router_logits)
+            scores_for_choice = scores.view(sequence_length, -1) + self.e_score_correction_bias[None]
+            group_scores = (scores_for_choice.view(sequence_length, self.n_group,
+                                                   -1).topk(2, dim=-1)[0].sum(dim=-1))  # [n, n_group]
+            group_idx = torch.topk(group_scores, k=self.topk_group, dim=-1, sorted=False)[1]  # [n, top_k_group]
+            group_mask = torch.zeros_like(group_scores)  # [n, n_group]
+            group_mask.scatter_(1, group_idx, 1)  # [n, n_group]
+            score_mask = (group_mask.unsqueeze(-1).expand(sequence_length, self.n_group,
+                                                          self.n_routed_experts // self.n_group).reshape(
+                                                              sequence_length, -1))  # [n, e]
+            tmp_scores = scores_for_choice.masked_fill(~score_mask.bool(), 0.0)  # [n, e]
+            _, topk_idx = torch.topk(tmp_scores, k=self.top_k, dim=-1, sorted=False)
+            topk_weight = scores.gather(1, topk_idx)
+        else:
+            raise RuntimeError(f'Unsupported topk_method: {self.topk_method}')
+
+        if self.renormalize:
+            denominator = topk_weight.sum(dim=-1, keepdim=True) + 1e-20
+            topk_weight = topk_weight / denominator
+            if not topk_weight.is_contiguous():
+                topk_weight = topk_weight.contiguous()
+
+        if not self.renormalize or self.topk_method == 'noaux_tc':
+            topk_weight = topk_weight * self.routed_scaling_factor
+
+        if self.eplb_dispatch_info is not None:
+            topk_idx = EPLBManager.topk_ids_logical_to_physical(topk_idx, self.eplb_dispatch_info)
+        # print("!!!!topk_weight, topk_idx!!!!!!", flush=True)
+        return topk_weight, topk_idx
+
+class DeepseekV2MoE(nn.Module):
+    """Deepseek v2 MoE."""
+
+    def __init__(self, config: Any, layer_idx, dtype: torch.dtype = None, device: torch.device = None, compressedTensorsConfig=None):
+        super().__init__()
+        quantization_config = getattr(config, 'quantization_config', None)
+        self.hidden_dim = config.hidden_size
+        self.ffn_dim = config.moe_intermediate_size
+        self.num_experts = config.n_routed_experts
+        self.top_k = config.num_experts_per_tok
+        self.norm_topk_prob = config.norm_topk_prob
+        self.routed_scaling_factor = config.routed_scaling_factor
+        self.renormalize = self.top_k > 1 and self.norm_topk_prob
+        self.topk_method = config.topk_method
+        self.n_group = config.n_group
+        self.topk_group = config.topk_group
+        self.compressed_tensor_config = compressedTensorsConfig
+
+        # from sglang.srt.models.deepseek_v2 import MoEGate as sgl_MoEGate
+
+        self.gate = SGMoEGate(config=config)
+    
+        from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
+        self.ep_size, self.ep_rank = get_tp_world_rank()
+
+        self.n_share_experts_fusion = 0
+
+        if config.topk_method == "noaux_tc":
+            self.e_score_correction_bias = nn.Parameter(
+                torch.ones((config.n_routed_experts), dtype=torch.bfloat16)
+            )
+        else:
+            self.e_score_correction_bias = None
+
+        self.experts = FusedMoE(
+            num_experts=config.n_routed_experts + self.n_share_experts_fusion,
+            top_k=config.num_experts_per_tok + min(self.n_share_experts_fusion, 1),
+            hidden_size=config.hidden_size,
+            intermediate_size=config.moe_intermediate_size,
+            renormalize=config.norm_topk_prob,
+            quant_config=self.compressed_tensor_config,
+            use_grouped_topk=True,
+            num_expert_group=config.n_group,
+            topk_group=config.topk_group,
+            correction_bias=self.e_score_correction_bias,
+            prefix="experts",
+            tp_size=self.ep_size,
+            tp_rank=self.ep_rank,
+        )
+
+        self.shared_experts = None
+        if config.n_shared_experts is not None and self.n_share_experts_fusion == 0:
+            intermediate_size = (config.moe_intermediate_size * config.n_shared_experts)
+            self.shared_experts = DeepseekV2MLP(
+                config=config,
+                intermediate_size=intermediate_size,
+                dtype=dtype,
+                device=device,
+                is_shared_expert=True,
+            )
+
+    def forward(self, hidden_states: torch.Tensor):
+        """forward."""
+
+        batch_size, sequence_length, hidden_dim = hidden_states.shape
+        if self.shared_experts is not None:
+            shared_states = self.shared_experts(hidden_states.view(batch_size, sequence_length, hidden_dim))
+        else:
+            shared_states = None
+
+        hidden_states = hidden_states.view(-1, hidden_dim)
+        router_logits = self.gate(hidden_states)
+        final_hidden_states = (
+            self.experts(hidden_states=hidden_states, router_logits=router_logits)
+            * self.routed_scaling_factor
+        )
+        final_hidden_states = final_hidden_states.view(batch_size, sequence_length, hidden_dim)
+
+        if shared_states is not None:
+            final_hidden_states = final_hidden_states + shared_states
+
+        if self.ep_size > 1:
+            dist.all_reduce(final_hidden_states)
+
+        return final_hidden_states
+
+
+
+class DeepseekV2MLP(nn.Module):
+    """Deepseek v2 mlp."""
+
+    def __init__(self,
+                 config: Any,
+                 intermediate_size: int = None,
+                 dtype: torch.dtype = None,
+                 device: torch.device = None,
+                 is_shared_expert: bool = False):
+        super().__init__()
+        quantization_config = getattr(config, 'quantization_config', None)
+        if is_shared_expert:
+            dist_ctx = get_dist_manager().current_context()
+            dp = dist_ctx.dp
+            if dp == 1:
+                # split weight, do all reduce in moe
+                is_tp = True
+                all_reduce = False
+            else:
+                # do not split weight on dp
+                # TODO: support dp+tp?
+                is_tp = False
+                all_reduce = False
+        else:
+            all_reduce = True
+            is_tp = True
+
+        # gate up
+        if intermediate_size is None:
+            intermediate_size = config.intermediate_size
+        self.gate_up_proj = build_gateup_linear(
+            config.hidden_size,
+            [intermediate_size, intermediate_size],
+            bias=False,
+            dtype=dtype,
+            device=device,
+            quant_config=quantization_config,
+            is_tp=is_tp,
+        )
+
+        # silu and mul
+        self.act_fn = sgl_SiluAndMul()
+
+        # down
+        self.down_proj = build_down_linear(
+            intermediate_size,
+            config.hidden_size,
+            bias=False,
+            quant_config=quantization_config,
+            dtype=dtype,
+            device=device,
+            is_tp=is_tp,
+            all_reduce=all_reduce,
+        )
+
+    def forward(self, x):
+        """forward."""
+        gate_up = self.gate_up_proj(x)
+        act = self.act_fn(gate_up)
+        down = self.down_proj(act)
+        return down
+
+
+class DeepseekV2DecoderLayer(nn.Module):
+    """Deepseekv2 decoder layer."""
+
+    def __init__(self, config: Any, layer_idx: int, dtype: torch.dtype = None, device: torch.device = None, compressedTensorsConfig=None):
+        super().__init__()
+        self.layer_idx = layer_idx
+        quantization_config = None
+
+        # build attention layer
+        if getattr(config, 'use_mla', True):
+            self.self_attn = DeepseekV2Attention(config, dtype=dtype, device=device)
+        else:
+            # deepseek-vl2-tiny uses MHA LlamaAttention structure
+            from lmdeploy.pytorch.models.llama import LlamaAttention
+            self.self_attn = LlamaAttention(config, dtype=dtype, device=device)
+
+        # mlp
+        self.mlp = (DeepseekV2MoE(config, layer_idx, dtype=dtype, device=device, compressedTensorsConfig=compressedTensorsConfig) if
+                    (config.n_routed_experts is not None and layer_idx >= config.first_k_dense_replace
+                     and layer_idx % config.moe_layer_freq == 0) else DeepseekV2MLP(config, dtype=dtype, device=device))
+
+        # build input layer norm
+        self.input_layernorm = RMSNorm(config.hidden_size,
+                                       config.rms_norm_eps,
+                                       quant_config=None,
+                                       dtype=dtype,
+                                       device=device)
+
+        # build attention layer norm
+        self.post_attention_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps, dtype=dtype, device=device)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        positions,
+        rotary_pos_emb,
+        past_key_value: Optional[List[torch.FloatTensor]],
+        residual: Optional[torch.Tensor] = None,
+        attn_metadata: Any = None,
+    ) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
+        if residual is None:
+            residual = hidden_states
+            hidden_states = self.input_layernorm(hidden_states)
+        else:
+            hidden_states, residual = self.input_layernorm(hidden_states, residual)
+
+        # Self Attention
+        hidden_states = self.self_attn(
+            hidden_states=hidden_states,
+            positions=positions,
+            rotary_pos_emb=rotary_pos_emb,
+            past_key_value=past_key_value,
+            attn_metadata=attn_metadata,
+        )
+
+        # Fully Connected
+        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+
+        hidden_states = self.mlp(hidden_states)
+
+        outputs = (hidden_states, residual)
+        return outputs
+
+    def forward_yield(
+        self,
+        hidden_states: torch.Tensor,
+        rotary_pos_emb: Tuple[torch.FloatTensor, torch.FloatTensor],
+        past_key_value: Optional[List[torch.FloatTensor]],
+        residual: Optional[torch.Tensor] = None,
+        attn_metadata: Any = None,
+        tag: Any = None,
+    ):
+        """forward_yield."""
+        is_decoding = attn_metadata.is_decoding
+        if residual is None:
+            residual = hidden_states
+            hidden_states = self.input_layernorm(hidden_states)
+        else:
+            hidden_states, residual = self.input_layernorm(hidden_states, residual)
+
+        # yield for attn0 and attn1
+        yield
+        # Self Attention
+        hidden_states = self.self_attn(
+            hidden_states=hidden_states,
+            rotary_pos_emb=rotary_pos_emb,
+            past_key_value=past_key_value,
+            attn_metadata=attn_metadata,
+        )
+
+        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+
+        # MOE
+        batch_size, sequence_length, hidden_dim = hidden_states.shape
+        hidden_states = hidden_states.view(-1, hidden_dim)
+        topk_weights, topk_idx = self.mlp.gate(hidden_states)
+
+        topk_weights = self.mlp.experts.renormalize(topk_weights)
+        topk_weights = topk_weights.to(torch.float32)
+        topk_idx = topk_idx.to(torch.int64)
+        hidden_shape = hidden_states.shape
+        shared_states = None
+
+        state = {
+            'hidden_states': hidden_states,
+            'topk_idx': topk_idx,
+            'topk_weights': topk_weights,
+            'raw_hidden_shape': hidden_shape,
+            'moe_type': MoeType.DSAsyncDecode if is_decoding else MoeType.DSAsyncPrefill,
+        }
+
+        self.mlp.experts.before_dispatch(state)
+
+        # yield for attn1, dis (+share)
+        yield
+        recv_state = self.mlp.experts.dispatch(state)
+        if self.mlp.shared_experts is not None and is_decoding:
+            shared_states = self.mlp.shared_experts(hidden_states)
+        # yield for dis, dis_wait
+        yield
+        self.mlp.experts.wait(recv_state)
+        # yield for dis_wait, moe
+        yield
+        gemm_state = self.mlp.experts.gemm(recv_state)
+        # yield for moe, comb
+        yield
+        out_state = self.mlp.experts.combine(gemm_state)
+        # yield for comb, (+share) comb_wait
+        yield
+        if self.mlp.shared_experts is not None and not is_decoding:
+            shared_states = self.mlp.shared_experts(hidden_states)
+        self.mlp.experts.wait(out_state)
+        # yield for (+share) comb_wait, (+share) attn0
+        yield
+        out_hidden_states = out_state['hidden_states'].view(hidden_shape)
+        if shared_states is not None:
+            out_hidden_states += shared_states
+        elif self.mlp.shared_experts is not None:
+            shared_states = self.mlp.shared_experts(hidden_states)
+            out_hidden_states += shared_states
+        else:
+            pass
+        out_hidden_states = out_hidden_states.reshape(batch_size, sequence_length, -1)
+        outputs = (out_hidden_states, residual)
+        return outputs
+
+
+class DeepseekV2Model(nn.Module):
+    """Mixtral model."""
+
+    def __init__(self, config: Any, dtype: torch.dtype = None, device: torch.device = None, compressedTensorsConfig=None):
+        super().__init__()
+        self.config = config
+        self.padding_idx = config.pad_token_id
+        self.vocab_size = config.vocab_size
+        self.embed_tokens = nn.Embedding(config.vocab_size,
+                                         config.hidden_size,
+                                         self.padding_idx,
+                                         dtype=dtype,
+                                         device=device)
+        if get_dist_manager().current_context().dist_config.enable_eplb:
+            ep_size_, _ = get_ep_world_rank()
+            EPLBManager.init_global_eplb_metadata(ep_size_, config.n_routed_experts, config.num_hidden_layers)
+        self.layers = nn.ModuleList([
+            DeepseekV2DecoderLayer(config, layer_idx, dtype=dtype, device=device, compressedTensorsConfig=compressedTensorsConfig)
+            for layer_idx in range(config.num_hidden_layers)
+        ])
+
+        # build norm
+        self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps, quant_config=None, dtype=dtype, device=device)
+
+        emb_type = RopeType.LinearScaling
+        rope_dim = config.qk_rope_head_dim if getattr(config, 'use_mla', True) else (config.hidden_size //
+                                                                                     config.num_attention_heads)
+        rope_max_pos_emb = config.max_position_embeddings
+        rope_base = config.rope_theta
+        scaling_factor = 1.0
+        other_params = dict()
+        if config.rope_scaling is not None:
+            scaling_type = config.rope_scaling['type']
+            scaling_factor = config.rope_scaling['factor']
+            if scaling_type == 'dynamic':
+                emb_type = RopeType.DynamicNTKScaling
+            elif scaling_type == 'yarn':
+                emb_type = RopeType.Yarn
+                rope_max_pos_emb = config.rope_scaling.get('original_max_position_embeddings', 4096)
+                kwargs = {
+                    key: config.rope_scaling[key]
+                    for key in [
+                        'beta_fast',
+                        'beta_slow',
+                        'mscale',
+                        'mscale_all_dim',
+                    ] if key in self.config.rope_scaling
+                }
+                yarn_params = YarnParameters(**kwargs)
+                other_params['yarn_params'] = yarn_params
+        # self.rotary_emb = build_rotary_embedding(rope_dim,
+        #                                          rope_max_pos_emb,
+        #                                          rope_base,
+        #                                          scaling_factor,
+        #                                          emb_type=emb_type,
+        #                                          **other_params)
+        rope_scaling = self.config.rope_scaling
+        if rope_scaling:
+            rope_scaling["rope_type"] = "deepseek_yarn"
+        self.rotary_emb = get_rope(
+            rope_dim,
+            rotary_dim=rope_dim,
+            max_position=rope_max_pos_emb,
+            base=rope_base,
+            rope_scaling=rope_scaling,
+            is_neox_style=False,
+        )
+
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        attn_metadata: Any = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+    ):
+        """forward."""
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
+
+        hidden_states = inputs_embeds
+        residual = None
+        # cos, sin = self.rotary_emb(hidden_states, position_ids)
+        # cos, sin = cos[0], sin[0]
+        # rotary_pos_emb = (cos, sin)
+        # import pdb;pdb.set_trace()
+
+        for idx, decoder_layer in enumerate(self.layers):
+            past_key_value = past_key_values[idx]
+            hidden_states, residual = decoder_layer(
+                hidden_states,
+                position_ids,
+                rotary_pos_emb=self.rotary_emb,
+                past_key_value=past_key_value,
+                residual=residual,
+                attn_metadata=attn_metadata,
+            )
+
+        hidden_states, _ = self.norm(hidden_states, residual)
+
+        return hidden_states
+
+    def forward_microbatch(
+        self,
+        input_ids: torch.LongTensor = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        attn_metadata: Any = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+    ):
+        """forward_microbatch."""
+        assert self.config.moe_layer_freq == 1
+        moe_start_idx = min(self.config.first_k_dense_replace, len(self.layers))
+
+        # embed and mlplayers
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
+        hidden_states = inputs_embeds
+        residual = None
+        cos, sin = self.rotary_emb(hidden_states, position_ids)
+        cos, sin = cos[0], sin[0]
+        rotary_pos_emb = (cos, sin)
+
+        for idx, decoder_layer in enumerate(self.layers[:moe_start_idx]):
+            past_key_value = past_key_values[idx]
+            hidden_states, residual = decoder_layer(
+                hidden_states,
+                rotary_pos_emb=rotary_pos_emb,
+                past_key_value=past_key_value,
+                residual=residual,
+                attn_metadata=attn_metadata,
+            )
+
+        if moe_start_idx < len(self.layers):
+            # run two micro batch
+            num = 2
+            input_list, exec_type, delta_stages, extern_tag = split_input(hidden_states,
+                                                                          rotary_pos_emb,
+                                                                          past_key_values,
+                                                                          residual,
+                                                                          attn_metadata,
+                                                                          moe_start_idx,
+                                                                          len(self.layers),
+                                                                          num=num)
+
+            output_list = execute_batch(inputs=input_list,
+                                        fn=self.forward_yieldlayers,
+                                        delta_stages=delta_stages,
+                                        exec_type=exec_type,
+                                        extern_tag=extern_tag)
+            hidden_states, residual = merge_output(output_list)
+
+        hidden_states, _ = self.norm(hidden_states, residual)
+
+        return hidden_states
+
+    def forward_yieldlayers(self,
+                            hidden_states: torch.Tensor,
+                            rotary_pos_emb: Tuple[torch.FloatTensor, torch.FloatTensor],
+                            past_key_values: Optional[List[torch.FloatTensor]] = None,
+                            residual: Optional[torch.Tensor] = None,
+                            attn_metadata: Any = None,
+                            start_idx: int = -1,
+                            end_idx: int = -1,
+                            tag: Any = None):
+        """forward_yieldlayers."""
+        for idx in range(start_idx, end_idx):
+            past_key_value = past_key_values[idx]
+            hidden_states, residual = yield from self.layers[idx].forward_yield(hidden_states,
+                                                                                rotary_pos_emb=rotary_pos_emb,
+                                                                                past_key_value=past_key_value,
+                                                                                residual=residual,
+                                                                                attn_metadata=attn_metadata,
+                                                                                tag=tag)
+        return hidden_states, residual
+
+    def get_input_embeddings(self):
+        """Get input embeddings."""
+        return self.embed_tokens
+
+
+class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
+    """Mixture model for causalLM."""
+
+    def __init__(self,
+                 config: Any,
+                 ctx_mgr: StepContextManager,
+                 dtype: torch.dtype = None,
+                 device: torch.device = None):
+        super().__init__()
+        self.config = config
+        self.quantization_config = getattr(config, 'quantization_config', None)
+
+        from sglang.srt.layers.quantization.compressed_tensors.compressed_tensors import CompressedTensorsConfig
+        self.compressed_quant_config = CompressedTensorsConfig.from_config(config.compression_config)
+
+        self.dtype = dtype
+        self.ctx_mgr = ctx_mgr
+        self.model = DeepseekV2Model(config, dtype=dtype, device=device, compressedTensorsConfig=self.compressed_quant_config)
+        # build lm_head
+        self.lm_head = build_rowwise_linear(config.hidden_size,
+                                            config.vocab_size,
+                                            bias=False,
+                                            dtype=dtype,
+                                            device=device)
+        self._load_buffers = dict()
+        self.enable_microbatch = get_dist_manager().current_context().dist_config.enable_microbatch
+        self.enable_microbatch_prefill_batchsize_threshold = \
+            int(getenv('ENABLE_MICROBATCH_PREFILL_BATCHSIZE_THRESHOLD', 2))
+        self.enable_microbatch_prefill_token_threshold = \
+            int(getenv('ENABLE_MICROBATCH_PREFILL_TOKEN_THRESHOLD', 2))
+        self.enable_microbatch_decode_batchsize_threshold = \
+            int(getenv('ENABLE_MICROBATCH_DECODE_BATCHSIZE_THRESHOLD', 2))
+
+        self.ep_size, self.ep_rank = get_ep_world_rank()
+        self.n_share_experts_fusion = 0
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+        past_key_values: List[List[torch.Tensor]],
+        attn_metadata: Any = None,
+        inputs_embeds: torch.Tensor = None,
+        **kwargs,
+    ):
+        if get_step_ctx_manager().current_context().enable_microbatch:
+            hidden_states = self.model.forward_microbatch(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                attn_metadata=attn_metadata,
+                inputs_embeds=inputs_embeds,
+            )
+        else:
+            hidden_states = self.model.forward(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                attn_metadata=attn_metadata,
+                inputs_embeds=inputs_embeds,
+            )
+        return hidden_states
+
+    def get_logits(self, hidden_states: torch.Tensor):
+        """Compute logits of the model output."""
+        return self.lm_head(hidden_states)
+
+    def get_input_embeddings(self):
+        """Get input embeddings."""
+        return self.model.get_input_embeddings()
+
+    def prepare_inputs_for_generation(
+        self,
+        past_key_values: List[List[torch.Tensor]],
+        inputs_embeds: Optional[torch.Tensor] = None,
+        context: StepContext = None,
+    ):
+        """Prepare input."""
+        input_ids = context.input_ids
+        position_ids = context.position_ids
+        attn_metadata = context.attn_metadata
+
+        # twobatch or onebatch
+        if self.enable_microbatch:
+            batch_size = attn_metadata.q_start_loc.size(dim=0)
+            tokens = input_ids.numel()
+            if attn_metadata.is_decoding:
+                enable_microbatch = batch_size >= self.enable_microbatch_decode_batchsize_threshold
+            else:
+                enable_microbatch = batch_size >= self.enable_microbatch_prefill_batchsize_threshold and \
+                                    tokens >= self.enable_microbatch_prefill_token_threshold
+            if enable_microbatch:
+                disable_num = torch.tensor(0, dtype=torch.int32, device=input_ids.device)
+            else:
+                disable_num = torch.tensor(1, dtype=torch.int32, device=input_ids.device)
+            ep_group = get_dist_manager().current_context().ep_gpu_group
+            dist.all_reduce(disable_num, op=dist.ReduceOp.SUM, group=ep_group)
+            step_ctx = get_step_ctx_manager().current_context()
+            enable_microbatch = disable_num.item() == 0
+            step_ctx.enable_microbatch = enable_microbatch
+        return dict(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            attn_metadata=attn_metadata,
+            inputs_embeds=inputs_embeds,
+        )
+
+    def post_load_weights(self):
+        # Perform post-processing after loading weights
+        for layer_id in range(self.config.num_hidden_layers):
+            self_attn = self.model.layers[layer_id].self_attn
+            w = self_attn.kv_b_proj.weight
+
+            if w.dtype == torch.int8:
+                w_kc_scale, w_vc_scale = self_attn.kv_b_proj.scale.unflatten(
+                    0, (-1, self_attn.qk_nope_head_dim + self_attn.v_head_dim)
+                ).split([self_attn.qk_nope_head_dim, self_attn.v_head_dim], dim=1)
+                self_attn.w_kc_scale = w_kc_scale.transpose(1, 2).contiguous().transpose(1, 2)
+                self_attn.w_vc_scale = w_vc_scale.contiguous().transpose(1, 2)
+
+            w_kc, w_vc = w.unflatten(
+                0, (-1, self_attn.qk_nope_head_dim + self_attn.v_head_dim)
+            ).split([self_attn.qk_nope_head_dim, self_attn.v_head_dim], dim=1)
+            self_attn.w_kc = w_kc.transpose(1, 2).contiguous().transpose(1, 2)
+            self_attn.w_vc = w_vc.contiguous().transpose(1, 2)
+
+            # Do dequantization for w_kc
+            self_attn.w_kc = (self_attn.w_kc.to(torch.float32) * self_attn.w_kc_scale).to(torch.bfloat16)
+            # if (self.enable_dequant_bf16 is False) and self_attn.w_kc.dtype == torch.int8 and self_attn.w_kc_scale is not None:
+            #     import fpdb;fpdb.ForkedPdb().set_trace()
+            #     self_attn.w_kc = (self_attn.w_kc.to(torch.float32) * self_attn.w_kc_scale).to(torch.bfloat16)
+
+            if (
+                hasattr(self_attn.kv_b_proj, "weight_scale")
+                and self_attn.w_scale is None
+            ):
+                self_attn.w_scale = self_attn.kv_b_proj.scale
+
+    def _load_weight_experts(self, name: str, loaded_weight: torch.Tensor, params_dict: Dict[str, nn.Parameter],
+                             expert_params_mapping: List):
+        """Load weight experts."""
+        for (param_name, weight_name, expert_id, shard_id) in expert_params_mapping:
+            if weight_name not in name:
+                continue
+            name = name.replace(weight_name, param_name)
+            if name not in params_dict.keys():
+                continue
+            param = params_dict[name]
+            load_weight(param, loaded_weight, expert_id=expert_id, shard_id=shard_id)
+            break
+        else:
+            if name in params_dict.keys():
+                param = params_dict[name]
+                load_weight(param, loaded_weight)
+
+    def _load_weight_experts_ep_moe(self, name: str, loaded_weight: torch.Tensor, params_dict: Dict[str, nn.Parameter],
+                                expert_params_mapping: List):
+        for mapping in expert_params_mapping:
+            param_name, weight_name, expert_id, shard_id = mapping
+            if weight_name not in name:
+                continue
+            name = name.replace(weight_name, param_name)
+            if name not in params_dict.keys():
+                continue
+            param = params_dict[name]
+            weight_loader = param.weight_loader
+            weight_loader(
+                param,
+                loaded_weight,
+                name,
+                shard_id=shard_id,
+                expert_id=expert_id,
+            )
+
+    def _load_weight_attention(self, name: str, loaded_weight: torch.Tensor, params_dict: Dict[str, nn.Parameter],
+                               update_pe_mapping: List):
+        """Load weight attention."""
+        device = next(iter(params_dict.values())).device
+
+        def __update_pe(weight, head_dim: int, pe_dim_offset: int):
+            # (num_heads, q_head_dim, input_dim)
+            weight = weight.unflatten(0, (-1, head_dim))
+            # (num_heads, nope_head_dim, input_dim)
+            w_pe = weight[:, pe_dim_offset:]
+            # (num_heads, nope_head_dim//2, 2, input_dim)
+            new_w_pe = w_pe.unflatten(1, (-1, 2))
+            # (num_heads, nope_head_dim, input_dim)
+            new_w_pe = new_w_pe.transpose(1, 2).flatten(1, 2)
+            weight[:, pe_dim_offset:] = new_w_pe
+            weight = weight.flatten(0, 1)
+            return weight
+
+        def __load_kcvc(name: str, weight: torch.Tensor):
+            """Load kc and vc from weight."""
+            config = self.config
+            v_head_dim = config.v_head_dim
+            qk_nope_head_dim = config.qk_nope_head_dim
+
+            w_kc, w_vc = weight.unflatten(0, (-1, qk_nope_head_dim + v_head_dim)).split([qk_nope_head_dim, v_head_dim],
+                                                                                        dim=1)
+
+            w_vc = w_vc.transpose(1, 2).contiguous()
+            kc_param_name = name.replace('.kv_b_proj', '.kc')
+            # if kc_param_name in params_dict.keys():
+            #     param_kc = params_dict[kc_param_name]
+            #     load_weight(param_kc, w_kc)
+            param_kc = params_dict[kc_param_name]
+            load_weight(param_kc, w_kc)
+            vc_param_name = name.replace('.kv_b_proj', '.vc')
+            # if vc_param_name in params_dict.keys():
+            #     param_vc = params_dict[vc_param_name]
+            #     load_weight(param_vc, w_vc)
+
+            param_vc = params_dict[vc_param_name]
+            # import pdb;pdb.set_trace()
+            # pass
+            load_weight(param_vc, w_vc)
+
+        def __dequant_weight(weight: torch.Tensor, scale: torch.Tensor, dtype: torch.dtype):
+            """Dequant weight."""
+            dim_w0, dim_w1 = weight.shape
+            dim_s0, dim_s1 = scale.shape
+            assert dim_w0 % dim_s0 == 0
+            assert dim_w1 % dim_s1 == 0
+            group0 = dim_w0 // dim_s0
+            group1 = dim_w1 // dim_s1
+            weight = weight.reshape(dim_s0, group0, dim_s1, group1)
+            scale = scale.reshape(dim_s0, 1, dim_s1, 1)
+            weight = weight.to(scale.dtype) * scale
+            weight = weight.to(dtype)
+            weight = weight.reshape(dim_w0, dim_w1)
+            return weight
+
+        def __load_kcvc_blocked_fp8(name: str, loaded_weight: torch.Tensor):
+            """Dequant weight."""
+            if name.endswith('.weight'):
+                weight_name = name
+                scale_name = name.replace('.weight', '.scale')
+            elif name.endswith('.weight_scale_inv'):
+                weight_name = name.replace('.weight_scale_inv', '.weight')
+                scale_name = name
+            self._load_buffers[name] = loaded_weight
+            if (weight_name in self._load_buffers and scale_name in self._load_buffers):
+                weight = self._load_buffers.pop(weight_name)
+                scale = self._load_buffers.pop(scale_name)
+                kc_param_name = weight_name.replace('.kv_b_proj', '.kc')
+                dtype = params_dict[kc_param_name].dtype
+                weight = __dequant_weight(weight, scale, dtype)
+                __load_kcvc(weight_name, weight)
+        
+
+        def __load_kcvc_int8(name: str, loaded_weight: torch.Tensor):
+            """Dequant weight."""
+            if name.endswith('.weight'):
+                weight_name = name
+                scale_name = name.replace('.weight', '.scale')
+            elif name.endswith('.scale'):
+                weight_name = name.replace('.scale', '.weight')
+                scale_name = name
+            self._load_buffers[name] = loaded_weight
+            if (weight_name in self._load_buffers and scale_name in self._load_buffers):
+                weight = self._load_buffers.pop(weight_name)
+                scale = self._load_buffers.pop(scale_name).to(torch.float32)
+ 
+                config = self.config
+                v_head_dim = config.v_head_dim
+                qk_nope_head_dim = config.qk_nope_head_dim
+                w_kc, w_vc = weight.unflatten(0, (-1, qk_nope_head_dim + v_head_dim)).split([qk_nope_head_dim, v_head_dim],
+                                                                                        dim=1)
+                w_kc_scale, w_vc_scale = scale.unflatten(0, (-1, qk_nope_head_dim + v_head_dim)).split([qk_nope_head_dim, v_head_dim],
+                                                                                        dim=1)
+
+                w_vc = w_vc.transpose(1, 2).contiguous()
+                w_vc_scale = w_vc_scale.transpose(1, 2).contiguous()
+
+                kc_param_weight_name = weight_name.replace('.kv_b_proj', '.kc')
+                kc_param_scale_name = scale_name.replace('.kv_b_proj', '.kc')
+                param_kc_weight = params_dict[kc_param_weight_name]
+                # param_kc_scale = params_dict[kc_param_scale_name]
+                w_kc_dequant = (w_kc.to(torch.float32) * w_kc_scale).to(torch.bfloat16)
+                load_weight(param_kc_weight, w_kc_dequant)
+                # load_weight(param_kc_weight, w_kc)
+                # import pdb;pdb.set_trace()
+                # load_weight(param_kc_scale, w_kc_scale)
+
+                vc_param_weight_name = weight_name.replace('.kv_b_proj', '.vc')
+                vc_param_scale_name = scale_name.replace('.kv_b_proj', '.vc')
+                param_vc_weight = params_dict[vc_param_weight_name]
+                param_vc_scale = params_dict[vc_param_scale_name]
+
+                load_weight(param_vc_weight, w_vc)
+                load_weight(param_vc_scale, w_vc_scale)
+
+        for (mod_name, head_dim, pe_dim_offset) in update_pe_mapping:
+            if mod_name not in name:
+                continue
+            if name.endswith('.weight_scale_inv'):
+                weight = loaded_weight
+            else:
+                loaded_weight = loaded_weight.to(device)
+                weight = __update_pe(loaded_weight, head_dim, pe_dim_offset)
+            if name not in params_dict.keys():
+                continue
+            param = params_dict[name]
+            load_weight(param, weight)
+            break
+        else:
+            if name in params_dict.keys():
+                param = params_dict[name]
+                load_weight(param, loaded_weight)
+            # if '.kv_b_proj' in name:
+            #     quantization_config = self.quantization_config
+            #     quant_method = None
+            #     if quantization_config is not None:
+            #         quant_method = quantization_config.get('quant_method')
+
+            #     loaded_weight = loaded_weight.to(device)
+            #     if quant_method == 'fp8':
+            #         # update blocked fp8 weight
+            #         __load_kcvc_blocked_fp8(name, loaded_weight)
+            #     # elif quant_method == 'smooth_quant':
+            #     #     __load_kcvc_int8(name, loaded_weight)
+            #     else:
+            #         __load_kcvc(name, loaded_weight)
+            # else:
+            #     param = params_dict[name]
+            #     load_weight(param, loaded_weight)
+
+    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
+        """Load weights."""
+
+        def __skip_nextn(name, nextn_keys):
+            for nextn_key in nextn_keys:
+                if nextn_key in name:
+                    return True
+            return False
+
+        stacked_params_mapping = [
+            # (param_name, shard_name, shard_id)
+            ('.gate_up_proj', '.gate_proj', 0),
+            ('.gate_up_proj', '.up_proj', 1),
+        ]
+
+
+        config = self.config
+        update_pe_mapping = []
+
+        # ep moe weights
+        from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
+        expert_params_mapping = FusedMoE.make_expert_params_mapping(
+            ckpt_gate_proj_name="gate_proj",
+            ckpt_down_proj_name="down_proj",
+            ckpt_up_proj_name="up_proj",
+            num_experts=self.config.n_routed_experts
+            + (
+                self.n_share_experts_fusion
+                if self.n_share_experts_fusion is not None
+                else 0
+            ),
+        )
+
+        num_hidden_layers = self.config.num_hidden_layers
+
+        num_nextn_predict_layers = getattr(self.config, 'num_nextn_predict_layers', 1)
+        nextn_keys = [f'.layers.{num_hidden_layers+i}' for i in range(num_nextn_predict_layers)]
+
+        params_dict = dict(self.named_parameters())
+
+        for name, loaded_weight in weights:
+            # if name.endswith('.kv_b_proj.no_quant'):
+            #     continue
+            if name.endswith('weight_scale') and 'mlp.experts' not in name:
+                name = name.replace('.weight_scale', '.scale')
+            if 'rotary_emb.inv_freq' in name:
+                continue
+            if ('rotary_emb.cos_cached' in name or 'rotary_emb.sin_cached' in name):
+                continue
+            if '.layers' in name:
+                # skip nextn
+                if __skip_nextn(name, nextn_keys):
+                    continue
+            if self.config.tie_word_embeddings and 'lm_head.weight' in name:
+                continue
+
+            if '.experts' in name:
+                # pass
+                # self._load_weight_experts(name, loaded_weight, params_dict, expert_params_mapping=expert_params_mapping)
+                self._load_weight_experts_ep_moe(name, loaded_weight, params_dict, expert_params_mapping=expert_params_mapping)
+            elif '.self_attn' in name and getattr(config, 'use_mla', True):
+                # attention
+                self._load_weight_attention(name, loaded_weight, params_dict, update_pe_mapping)
+            else:
+                # other
+                for (param_name, weight_name, shard_id) in stacked_params_mapping:
+                    if weight_name not in name:
+                        continue
+                    name = name.replace(weight_name, param_name)
+                    if name not in params_dict.keys():
+                        continue
+                    param = params_dict[name]
+                    load_weight(param, loaded_weight, shard_id=shard_id)
+                    break
+                else:
+                    if name in params_dict.keys():
+                        param = params_dict[name]
+                        load_weight(param, loaded_weight)
+                    # try:
+                    #     param = params_dict[name]
+                    # except Exception as e:
+                    #     import pdb;pdb.set_trace()
+                    #     pass
+                    # load_weight(param, loaded_weight)
+        
+        self.post_load_weights()
+        # print('############################################ load weight finished!!!!!!!!!!!!!!!')

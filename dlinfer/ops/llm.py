@@ -5,6 +5,7 @@ from dlinfer.utils.type_annotation import Tensor, Optional, Sequence, Tuple
 from dlinfer.graph.custom_op import register_custom_op
 from dlinfer.vendor import linear_w8a8_scale_type, dynamic_quant_scale_type
 
+from typing import List, Any
 
 __all__ = [
     "add_rms_norm",
@@ -252,6 +253,7 @@ def fill_kv_cache(
         "kv_scales": None,
         "kv_zeros": None,
         "quant_bits": 0,
+        "flashinfer_wrapper": None,
     },
 )
 def paged_decode_attention(
@@ -271,6 +273,7 @@ def paged_decode_attention(
     kv_scales: Optional[Tensor],
     kv_zeros: Optional[Tensor],
     quant_bits: Optional[int],
+    flashinfer_wrapper: Optional[Any],
 ) -> Tensor:
     """
     Computes the multi-head attention over the query, key, and value tensors.
@@ -314,6 +317,7 @@ def paged_decode_attention(
         kv_scales,
         kv_zeros,
         quant_bits,
+        flashinfer_wrapper,
     )
 
 
