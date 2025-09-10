@@ -235,9 +235,18 @@ __global__ void reshape_and_cache_kernel_layout(
     const int head_offset = i % head_size;
 
     int64_t tgt_key_idx = 0;
-    tgt_key_idx = block_idx * num_heads * head_size * block_size +
-    head_idx * head_size * block_size + block_offset * head_size +
-    head_offset;
+    if (is_mla) {
+      tgt_key_idx = block_idx * num_heads * head_size * block_size +
+      head_idx * head_size * block_size + block_offset * head_size +
+      head_offset;
+    } else {
+      const int x_idx = head_offset / x;
+      const int x_offset = head_offset % x;
+      tgt_key_idx =
+        block_idx * num_heads * head_size * block_size +
+        head_idx * head_size * block_size + x_idx * block_size * x +
+        block_offset * x + x_offset;
+    }
 
     const int64_t tgt_value_idx =
         block_idx * num_heads * head_size * block_size +
@@ -291,9 +300,18 @@ __global__ void reshape_and_cache_kernel_layout_opt(
     const int head_offset = i % head_size;
 
     int64_t tgt_key_idx = 0;
+    if (is_mla) {
     tgt_key_idx = block_idx * num_heads * head_size * block_size +
-    head_idx * head_size * block_size + block_offset * head_size +
-    head_offset;
+      head_idx * head_size * block_size + block_offset * head_size +
+      head_offset;
+    } else {
+      const int x_idx = head_offset / x;
+      const int x_offset = head_offset % x;
+      tgt_key_idx =
+        block_idx * num_heads * head_size * block_size +
+        head_idx * head_size * block_size + x_idx * block_size * x +
+        block_offset * x + x_offset;
+    }
 
     const int64_t tgt_value_idx =
         block_idx * num_heads * head_size * block_size +
@@ -439,12 +457,18 @@ void reshape_and_cache_new(
   int num_heads = key.size(1);
   int head_size = key.size(2);
 
-  bool is_mla = key.size(-1) != value.size(-1);
+  // bool is_mla = key.size(-1) != value.size(-1);
+  bool is_mla = (key.size(-1) != value.size(-1)) || (key.size(-1) == 576);
 
   int x;
   int block_size;
-  x = 16;
-  block_size = key_cache.size(2);
+  if (is_mla) {
+    x = 16;
+    block_size = key_cache.size(2);
+  } else {
+    x = key_cache.size(4);
+    block_size = key_cache.size(3);
+  }
 
   int key_stride = key.stride(0);
   int value_stride = value.stride(0);

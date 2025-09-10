@@ -1438,9 +1438,6 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
 
             # Do dequantization for w_kc
             self_attn.w_kc = (self_attn.w_kc.to(torch.float32) * self_attn.w_kc_scale).to(torch.bfloat16)
-            # if (self.enable_dequant_bf16 is False) and self_attn.w_kc.dtype == torch.int8 and self_attn.w_kc_scale is not None:
-            #     import fpdb;fpdb.ForkedPdb().set_trace()
-            #     self_attn.w_kc = (self_attn.w_kc.to(torch.float32) * self_attn.w_kc_scale).to(torch.bfloat16)
 
             if (
                 hasattr(self_attn.kv_b_proj, "weight_scale")
@@ -1513,19 +1510,11 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
 
             w_vc = w_vc.transpose(1, 2).contiguous()
             kc_param_name = name.replace('.kv_b_proj', '.kc')
-            # if kc_param_name in params_dict.keys():
-            #     param_kc = params_dict[kc_param_name]
-            #     load_weight(param_kc, w_kc)
             param_kc = params_dict[kc_param_name]
             load_weight(param_kc, w_kc)
             vc_param_name = name.replace('.kv_b_proj', '.vc')
-            # if vc_param_name in params_dict.keys():
-            #     param_vc = params_dict[vc_param_name]
-            #     load_weight(param_vc, w_vc)
 
             param_vc = params_dict[vc_param_name]
-            # import pdb;pdb.set_trace()
-            # pass
             load_weight(param_vc, w_vc)
 
         def __dequant_weight(weight: torch.Tensor, scale: torch.Tensor, dtype: torch.dtype):
@@ -1620,23 +1609,6 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
             if name in params_dict.keys():
                 param = params_dict[name]
                 load_weight(param, loaded_weight)
-            # if '.kv_b_proj' in name:
-            #     quantization_config = self.quantization_config
-            #     quant_method = None
-            #     if quantization_config is not None:
-            #         quant_method = quantization_config.get('quant_method')
-
-            #     loaded_weight = loaded_weight.to(device)
-            #     if quant_method == 'fp8':
-            #         # update blocked fp8 weight
-            #         __load_kcvc_blocked_fp8(name, loaded_weight)
-            #     # elif quant_method == 'smooth_quant':
-            #     #     __load_kcvc_int8(name, loaded_weight)
-            #     else:
-            #         __load_kcvc(name, loaded_weight)
-            # else:
-            #     param = params_dict[name]
-            #     load_weight(param, loaded_weight)
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         """Load weights."""
@@ -1652,7 +1624,6 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
             ('.gate_up_proj', '.gate_proj', 0),
             ('.gate_up_proj', '.up_proj', 1),
         ]
-
 
         config = self.config
         update_pe_mapping = []
@@ -1679,8 +1650,6 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
         params_dict = dict(self.named_parameters())
 
         for name, loaded_weight in weights:
-            # if name.endswith('.kv_b_proj.no_quant'):
-            #     continue
             if name.endswith('weight_scale') and 'mlp.experts' not in name:
                 name = name.replace('.weight_scale', '.scale')
             if 'rotary_emb.inv_freq' in name:
@@ -1695,8 +1664,6 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
                 continue
 
             if '.experts' in name:
-                # pass
-                # self._load_weight_experts(name, loaded_weight, params_dict, expert_params_mapping=expert_params_mapping)
                 self._load_weight_experts_ep_moe(name, loaded_weight, params_dict, expert_params_mapping=expert_params_mapping)
             elif '.self_attn' in name and getattr(config, 'use_mla', True):
                 # attention
@@ -1716,12 +1683,5 @@ class DeepseekV2ForCausalLM(nn.Module, CudaGraphMixin):
                     if name in params_dict.keys():
                         param = params_dict[name]
                         load_weight(param, loaded_weight)
-                    # try:
-                    #     param = params_dict[name]
-                    # except Exception as e:
-                    #     import pdb;pdb.set_trace()
-                    #     pass
-                    # load_weight(param, loaded_weight)
         
         self.post_load_weights()
-        # print('############################################ load weight finished!!!!!!!!!!!!!!!')
