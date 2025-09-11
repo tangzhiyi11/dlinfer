@@ -140,7 +140,7 @@ def MacaCudaGraphMixin_make_buffers_cudagraph(
         kv_indices = torch.zeros((max_batches * num_blocks, ), dtype=torch.int32, device=device)
         kv_len_arr = torch.ones((max_batches,), dtype=torch.int32, device=device)
         flashinfer_decode_wrapper = flashinfer.mla.BatchMLAPagedAttentionWrapper(
-            torch.empty(128 * 1024 * 1024, dtype=torch.int8).to(0),
+            torch.empty(128 * 1024 * 1024, dtype=torch.int8).to(device),
             use_cuda_graph=True,
             qo_indptr=qo_indptr,
             kv_indptr=kv_indptr,
