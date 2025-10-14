@@ -296,44 +296,22 @@ def paged_prefill_attention(
     context_lens = kv_seq_len - q_seq_len
 
     is_mla = key.size(-1) != value.size(-1)
+    assert not is_mla, "Mla is not supported!"
 
-    if is_mla:
-        num_blocks = key_cache.shape[0]
-        key_cache = key_cache.permute(0, 1, 2, 4, 3).reshape(
-            num_blocks, num_kv_heads, -1, block_size
-        )
-        value_cache = key_cache
-        context_attention_fwd(
-            query,
-            key,
-            value,
-            output,
-            key_cache,
-            value_cache,
-            b_loc=block_table,
-            b_start_loc=q_start_loc,
-            b_seq_len=kv_seq_len,
-            b_ctx_len=context_lens,
-            max_input_len=max_q_seq_len,
-            alibi_slopes=alibi_slopes,
-        )
-        return output[..., :512]
-
-    value_cache = value_cache.permute(0, 1, 3, 2)
-    context_attention_fwd(
+    output = flash_attn_varlen_func(
         query,
-        key,
-        value,
-        output,
         key_cache,
         value_cache,
-        b_loc=block_table,
-        b_start_loc=q_start_loc,
-        b_seq_len=kv_seq_len,
-        b_ctx_len=context_lens,
-        max_input_len=max_q_seq_len,
-        alibi_slopes=alibi_slopes,
+        cu_seqlens_q=q_start_loc,
+        cu_seqlens_k=cu_seq_lens_kv,
+        max_seqlen_q=max_q_seq_len,
+        max_seqlen_k=max_kv_seq_len,
+        softmax_scale=softmax_scale,
+        causal=True,
+        window_size=(-1, -1),
+        block_table=block_table,
     )
+
     return output
 
 
