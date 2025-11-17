@@ -40,6 +40,7 @@ class AscendPiecewiseGraphMeta(CudaGraphMeta):
 
 class AscendPiecewiseAttentionBuffer:
     class_attention_output: Tensor = None
+    _cached_shape: Tuple[int, int, torch.dtype, torch.device] = None
 
     @classmethod
     def get_attention_output(
@@ -51,15 +52,25 @@ class AscendPiecewiseAttentionBuffer:
             tp, tp_rank = get_tp_world_rank("attn")  # need lmdeploy to support dp+tp
             if is_debug_enabled():
                 logger.info("get_attention_output: tp=%s, tp_rank=%s", tp, tp_rank)
+        heads_per_rank = num_attention_heads // tp
+        target_shape = (batch_size, heads_per_rank, head_dim)
+        cached_shape = cls._cached_shape
+        if (
+            cls.class_attention_output is None
+            or cached_shape is None
+            or cached_shape[0] < heads_per_rank
+            or cached_shape[1] != head_dim
+            or cached_shape[2] != dtype
+            or cached_shape[3] != device
+            or cls.class_attention_output.shape[0] < batch_size
+        ):
             cls.class_attention_output = torch.empty(
-                batch_size,
-                num_attention_heads // tp,
-                head_dim,
+                target_shape,
                 dtype=dtype,
                 device=device,
             )
-            return cls.class_attention_output
-        return cls.class_attention_output[:batch_size]
+            cls._cached_shape = (heads_per_rank, head_dim, dtype, device)
+        return cls.class_attention_output[:batch_size, :heads_per_rank]
 
 
 class GraphCaptureSession:
