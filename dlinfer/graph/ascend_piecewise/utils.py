@@ -2,19 +2,19 @@
 FX Graph debugging utilities for dlinfer ascend piecewise compilation.
 """
 
+import os
 import torch.fx as fx
 from typing import List, Dict, Any, Optional
 from collections import Counter
 from lmdeploy.utils import get_logger
 from .graph_splitter import SplitItem
-from .common import is_debug_enabled
 
 logger = get_logger("dlinfer.debug")
 
 
 def is_fx_graph_debug_enabled() -> bool:
     """Check if FX graph debugging is enabled via environment variable."""
-    return is_debug_enabled()
+    return os.environ.get("DLINFER_ASCEND_PIECEWISE_GRAPH_DEBUG", "0") == "1"
 
 
 def debug_fx_graph_structure(gm: fx.GraphModule, title: str = "FX Graph") -> None:
