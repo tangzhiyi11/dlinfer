@@ -33,9 +33,10 @@ from torch.profiler import record_function
 logger = get_logger("dlinfer")
 
 
-USE_CAPTURE_SESSION = (
-    os.environ.get("DLINFER_ASCEND_USE_CAPTURE_SESSION", "0") == "1"
+DISABLE_CAPTURE_SESSION = (
+    os.environ.get("DLINFER_ASCEND_DISABLE_CAPTURE_SESSION", "0") == "1"
 )
+USE_CAPTURE_SESSION = not DISABLE_CAPTURE_SESSION
 _CAPTURE_SESSION_LOGGED = False
 
 
@@ -88,13 +89,13 @@ class AscendPiecewiseSingleGraphRunner:
         self.compiled_model = None
         self.backend = None
 
+        global _CAPTURE_SESSION_LOGGED
         self._use_session = USE_CAPTURE_SESSION
         if self._use_session:
-            global _CAPTURE_SESSION_LOGGED
             if not _CAPTURE_SESSION_LOGGED:
                 logger.info(
-                    "[AscendRunner] DLINFER_ASCEND_USE_CAPTURE_SESSION=1 → "
-                    "GraphCaptureSession path enabled"
+                    "[AscendRunner] GraphCaptureSession path enabled "
+                    "(set DLINFER_ASCEND_DISABLE_CAPTURE_SESSION=1 to use legacy runner)"
                 )
                 _CAPTURE_SESSION_LOGGED = True
             self.session = GraphCaptureSession(
@@ -107,6 +108,12 @@ class AscendPiecewiseSingleGraphRunner:
                 device=device,
             )
         else:
+            if not _CAPTURE_SESSION_LOGGED:
+                logger.info(
+                    "[AscendRunner] DLINFER_ASCEND_DISABLE_CAPTURE_SESSION=1 → "
+                    "falling back to legacy runner"
+                )
+                _CAPTURE_SESSION_LOGGED = True
             self.meta = AscendPiecewiseGraphMeta(
                 max_batchs=max_batches,
                 max_tokens=max_tokens,
