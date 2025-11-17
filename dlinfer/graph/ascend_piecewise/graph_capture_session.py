@@ -30,12 +30,9 @@ class AscendPiecewiseGraphMeta(CudaGraphMeta):
     num_blocks: int
     is_decoding: int
     device: torch.device
-    head_dim: int
-    num_attention_heads: int
-    dtype: torch.dtype
-    input_buffers: BuffType = None
-    output_buffers: BuffType = None
-    vocab_size: int = 1
+    head_dim: int = 0
+    num_attention_heads: int = 0
+    dtype: torch.dtype = torch.float16
 
 
 class AscendPiecewiseAttentionBuffer:
