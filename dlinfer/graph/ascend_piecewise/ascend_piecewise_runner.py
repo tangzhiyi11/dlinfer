@@ -33,6 +33,7 @@ logger = get_logger("dlinfer")
 USE_CAPTURE_SESSION = (
     os.environ.get("DLINFER_ASCEND_USE_CAPTURE_SESSION", "0") == "1"
 )
+_CAPTURE_SESSION_LOGGED = False
 
 
 def is_debug_enabled() -> bool:
@@ -418,6 +419,13 @@ class AscendPiecewiseSingleGraphRunner:
 
         self._use_session = USE_CAPTURE_SESSION
         if self._use_session:
+            global _CAPTURE_SESSION_LOGGED
+            if not _CAPTURE_SESSION_LOGGED:
+                logger.info(
+                    "[AscendRunner] DLINFER_ASCEND_USE_CAPTURE_SESSION=1 → "
+                    "GraphCaptureSession path enabled"
+                )
+                _CAPTURE_SESSION_LOGGED = True
             self.session = GraphCaptureSession(
                 model=model,
                 model_config=model_config,
