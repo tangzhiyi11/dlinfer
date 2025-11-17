@@ -21,28 +21,15 @@ from dlinfer.graph.ascend_piecewise.utils import (
     debug_compilation_summary,
     is_fx_graph_debug_enabled,
 )
+from dlinfer.graph.ascend_piecewise.common import is_debug_enabled
+from dlinfer.graph.ascend_piecewise.graph_pool_manager import get_graph_pool_manager
 
 logger = get_logger("dlinfer.backend")
 
 
-def is_debug_enabled() -> bool:
-    """Check if FX graph debugging is enabled via environment variable."""
-    import os
-
-    return os.environ.get("DLINFER_ASCEND_PIECEWISE_GRAPH_DEBUG", "0") == "1"
-
-
-_global_graph_pool = None
-
-
 def get_graph_pool() -> Any:
     """Get the global unique graph_pool instance."""
-    global _global_graph_pool
-    if _global_graph_pool is None:
-        _global_graph_pool = torch.cuda.graph_pool_handle()
-        if is_debug_enabled():
-            logger.info("Created global graph pool for shared use across instances")
-    return _global_graph_pool
+    return get_graph_pool_manager().get_pool()
 
 
 def next_power_of_2(n: int) -> int:
