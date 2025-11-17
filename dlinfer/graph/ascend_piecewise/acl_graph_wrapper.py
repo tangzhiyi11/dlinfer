@@ -283,12 +283,7 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
             if quota_acquired:
                 self.pool_manager.release()
             logger.error("Failed to capture ACL graph for shapes %s: %s", cache_key, e)
-            logger.warning(
-                "Disabling ACL graph for this wrapper due to capture failure; falling back to eager execution."
-            )
-            self._use_graph = False
-            self.cache.clear()
-            return self.runnable(*args, **kwargs)
+            raise
         finally:
             config.is_capturing = original_is_capturing
 
