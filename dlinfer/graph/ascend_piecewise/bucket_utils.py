@@ -9,6 +9,7 @@ from typing import Iterable, List, Optional, Sequence
 from lmdeploy.pytorch.config import CacheConfig, ModelConfig
 from lmdeploy.utils import get_logger
 
+from .common import GRAPH_CAPTURE_SIZES_ENV
 
 _LOGGER = get_logger("dlinfer.ascend.bucket")
 
@@ -256,7 +257,7 @@ def adjust_capture_batch_sizes(
 ) -> List[int]:
     local_logger = logger_ or _LOGGER
 
-    env_sizes_str = os.getenv("DLINFER_ASCEND_GRAPH_CAPTURE_SIZES", "")
+    env_sizes_str = os.getenv(GRAPH_CAPTURE_SIZES_ENV, "")
     if env_sizes_str:
         try:
             env_sizes = [int(x.strip()) for x in env_sizes_str.split(",") if x.strip()]
@@ -306,4 +307,3 @@ __all__ = [
     "limit_capture_buckets",
     "limit_capture_bucket_list",
 ]
-

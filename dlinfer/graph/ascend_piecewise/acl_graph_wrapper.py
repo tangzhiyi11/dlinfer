@@ -15,14 +15,10 @@ from unittest.mock import patch
 from collections import OrderedDict
 from lmdeploy.utils import get_logger
 
+from .common import is_debug_enabled
+from .graph_pool_manager import get_graph_pool_manager
+
 logger = get_logger("dlinfer.acl_graph")
-
-
-def is_debug_enabled() -> bool:
-    """Check if ACL graph debugging is enabled via environment variable."""
-    import os
-
-    return os.environ.get("DLINFER_ASCEND_PIECEWISE_GRAPH_DEBUG", "0") == "1"
 
 
 # Global counter for ACL graph capture statistics
@@ -44,6 +40,7 @@ class ACLGraphEntry:
     arg_indices: Optional[List[int]] = None
     arg_shapes: Optional[List[torch.Size]] = None
     arg_views: Optional[List[torch.Tensor]] = None
+    quota_token: int = 0
 
 
 def weak_ref_tensor(t: torch.Tensor) -> torch.Tensor:
@@ -92,10 +89,9 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
             raise ValueError("runnable must be callable")
         if max_cache_size <= 0:
             raise ValueError("max_cache_size must be positive")
-        if graph_pool is None:
-            raise ValueError("graph_pool cannot be None")
-
         super().__init__()
+
+        self.pool_manager = get_graph_pool_manager()
 
         self.runnable = runnable
         self.is_first_graph = is_first_graph
@@ -105,7 +101,7 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
         self.auto_detect_stage = is_decoding is None
         self._use_graph = self.auto_detect_stage or bool(is_decoding)
 
-        self.graph_pool = graph_pool
+        self.graph_pool = graph_pool or self.pool_manager.get_pool()
         self.debug_mode = logger.level <= 10
 
         self.max_cache_size = max_cache_size
@@ -204,7 +200,16 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
         """Capture ACL Graph for given inputs."""
         global acl_graph_capture_count
         self._ensure_signature(args, kwargs)
+
+        if not self.pool_manager.try_acquire():
+            logger.warning(
+                "ACL graph quota exceeded (limit reached); executing runnable eagerly for cache_key=%s",
+                cache_key,
+            )
+            return self.runnable(*args, **kwargs)
+
         entry = ACLGraphEntry(cache_key=cache_key)
+        quota_acquired = True
 
         tensor_args = [
             (idx, arg) for idx, arg in enumerate(args) if isinstance(arg, torch.Tensor)
@@ -260,6 +265,7 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
             ref_output = weak_ref_tensor(output)
             entry.output = ref_output
 
+            entry.quota_token = 1
             self._add_to_cache(cache_key, entry)
             acl_graph_capture_count += 1
 
@@ -274,6 +280,8 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
         except Exception as e:
             if acl_graph is not None:
                 del acl_graph
+            if quota_acquired:
+                self.pool_manager.release()
             logger.error("Failed to capture ACL graph for shapes %s: %s", cache_key, e)
             raise
         finally:
@@ -297,18 +305,31 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
             oldest_key, oldest_entry = self.cache.popitem(last=False)
             if is_debug_enabled():
                 logger.debug("Evicted cache entry %s due to size limit", oldest_key)
-
-            if oldest_entry.acl_graph is not None:
-                del oldest_entry.acl_graph
-            oldest_entry.output = None
-            oldest_entry.arg_buffers = None
-            oldest_entry.arg_views = None
+            self._release_entry(oldest_entry)
 
         self.cache[cache_key] = entry
         if is_debug_enabled():
             logger.debug(
                 "Added cache entry %s (cache size: %d)", cache_key, len(self.cache)
             )
+
+    def _release_entry(self, entry: ACLGraphEntry) -> None:
+        if entry is None:
+            return
+        if entry.acl_graph is not None:
+            try:
+                del entry.acl_graph
+            except Exception:
+                pass
+        entry.acl_graph = None
+        entry.output = None
+        entry.arg_buffers = None
+        entry.arg_views = None
+        entry.arg_indices = None
+        entry.arg_shapes = None
+        if entry.quota_token:
+            self.pool_manager.release(entry.quota_token)
+            entry.quota_token = 0
 
     def _validate_input_buffers(
         self, entry: ACLGraphEntry, cache_key: Tuple[Any, ...]
@@ -375,21 +396,14 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
 
     def reset(self) -> None:
         """Reset graph cache (for testing)."""
-        self.cache.clear()
-        if is_debug_enabled():
-            logger.debug("ACL Graph cache reset")
+        self.clear_cache()
 
     def clear_cache(self) -> None:
         for cache_key, entry in self.cache.items():
             try:
-                if entry.acl_graph is not None:
-                    del entry.acl_graph
+                self._release_entry(entry)
             except Exception as e:
                 logger.warning(f"Failed to delete ACL graph for cache {cache_key}: {e}")
-
-            entry.output = None
-            entry.arg_buffers = None
-            entry.arg_views = None
 
         self.cache.clear()
 
