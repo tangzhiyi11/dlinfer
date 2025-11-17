@@ -6,7 +6,7 @@ lmdeploywarmup
 import os
 import torch
 from torch import Tensor
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 from lmdeploy.utils import get_logger
 
 from lmdeploy.pytorch.backends.graph_runner import GraphRunner
@@ -134,8 +134,8 @@ class AscendPiecewiseSingleGraphRunner:
         if self._use_session:
             return self.session.capture(**kwargs)
 
-        logger.info(f"Capturing graph with meta: {self.meta}")
-        print(f"######## Capturing graph with meta: {self.meta}", flush=True)
+        if is_debug_enabled():
+            logger.info("Capturing graph with meta: %s", self.meta)
 
         num_tokens = kwargs["input_ids"].size(-1)
 
@@ -210,6 +210,27 @@ class AscendPiecewiseSingleGraphRunner:
             del self.compiled_model
 
 
+class RunnerCache:
+    """Simple helper to manage cached graph runners."""
+
+    def __init__(self) -> None:
+        self._entries: Dict[Any, AscendPiecewiseSingleGraphRunner] = {}
+
+    def get_or_create(
+        self, key: Any, factory: Callable[[], AscendPiecewiseSingleGraphRunner]
+    ) -> Tuple[AscendPiecewiseSingleGraphRunner, bool]:
+        runner = self._entries.get(key)
+        created = False
+        if runner is None:
+            runner = factory()
+            self._entries[key] = runner
+            created = True
+        return runner, created
+
+    def clear(self) -> None:
+        self._entries.clear()
+
+
 class AscendPiecewiseGraphRunner(GraphRunner):
     """Cuda graph runner."""
 
@@ -227,7 +248,7 @@ class AscendPiecewiseGraphRunner(GraphRunner):
         self.num_blocks = cache_config.num_gpu_blocks
         self.enable_graph = self.check_enable_graph()
         self.graph_pool_handle = torch.cuda.graph_pool_handle()
-        self._runner_map: Dict[Any, AscendPiecewiseSingleGraphRunner] = dict()
+        self._runner_cache = RunnerCache()
         self.has_try_compile_model: bool = False
 
         override_env = os.getenv("DLINFER_ASCEND_CAPTURE_SIZES")
@@ -351,10 +372,10 @@ class AscendPiecewiseGraphRunner(GraphRunner):
         graph_key = self.get_graph_key(**kwargs)
         max_tokens = graph_key[0]
         is_decoding = graph_key[1]
-        runner = self._runner_map.get(graph_key)
-        if runner is None:
-            max_batches = max_tokens if is_decoding else self.max_batches
-            runner = AscendPiecewiseSingleGraphRunner(
+        max_batches = max_tokens if is_decoding else self.max_batches
+
+        def _factory():
+            return AscendPiecewiseSingleGraphRunner(
                 self.model,
                 max_batches=max_batches,
                 max_tokens=max_tokens,
@@ -364,8 +385,9 @@ class AscendPiecewiseGraphRunner(GraphRunner):
                 model_config=self.model_config,
                 device=self.device,
             )
-            self._runner_map[graph_key] = runner
 
+        runner, created = self._runner_cache.get_or_create(graph_key, _factory)
+        if created:
             from dlinfer.graph import config
 
             original_is_capturing = config.is_capturing
@@ -394,7 +416,7 @@ class AscendPiecewiseGraphRunner(GraphRunner):
 
     def reset(self):
         """Remove all graphs to prevent hanging on exit."""
-        self._runner_map.clear()
+        self._runner_cache.clear()
 
     def update_inputs(self, inputs):
         """Update inputs."""

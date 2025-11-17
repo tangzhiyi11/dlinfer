@@ -264,9 +264,8 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
             acl_graph_capture_count += 1
 
             if is_debug_enabled():
-                logger.info(f"########## ACL Graph captured for shapes {cache_key}")
-                logger.info(f"########## Total ACL Graph captures: {acl_graph_capture_count}")
-            print(f"########## Total ACL Graph captures: {acl_graph_capture_count}")
+                logger.info("ACL Graph captured for shapes %s", cache_key)
+                logger.info("Total ACL Graph captures: %s", acl_graph_capture_count)
 
             # return output
             return ref_output
