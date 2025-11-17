@@ -23,10 +23,16 @@ from dlinfer.graph.ascend_piecewise.piecewise_backend import (
 from dlinfer.graph.ascend_piecewise.bucket_utils import limit_capture_bucket_list
 from dlinfer.graph.ascend_piecewise.bucket_utils import adjust_capture_batch_sizes
 from lmdeploy.pytorch.model_inputs import StepContext, get_step_ctx_manager
+from dlinfer.graph.ascend_piecewise.graph_capture_session import GraphCaptureSession
 
 from torch.profiler import record_function
 
 logger = get_logger("dlinfer")
+
+
+USE_CAPTURE_SESSION = (
+    os.environ.get("DLINFER_ASCEND_USE_CAPTURE_SESSION", "0") == "1"
+)
 
 
 def is_debug_enabled() -> bool:
@@ -402,20 +408,6 @@ class AscendPiecewiseSingleGraphRunner:
         self.model = model
         self.ctx_mgr = model.ctx_mgr
         self.model_config = model_config
-
-        self.meta = AscendPiecewiseGraphMeta(
-            max_batchs=max_batches,
-            max_tokens=max_tokens,
-            num_blocks=num_blocks,
-            is_decoding=is_decoding,
-            device=device,
-            head_dim=self.model_config.head_dim,
-            num_attention_heads=self.model_config.num_attention_heads,
-            dtype=self.model_config.dtype,
-            input_buffers=dict(),
-            output_buffers=dict(),
-            vocab_size=self.model_config.vocab_size,
-        )
         self.device = device
         self.max_batches = max_batches
         self.max_tokens = max_tokens
@@ -424,9 +416,38 @@ class AscendPiecewiseSingleGraphRunner:
         self.compiled_model = None
         self.backend = None
 
+        self._use_session = USE_CAPTURE_SESSION
+        if self._use_session:
+            self.session = GraphCaptureSession(
+                model=model,
+                model_config=model_config,
+                max_batches=max_batches,
+                max_tokens=max_tokens,
+                num_blocks=num_blocks,
+                is_decoding=is_decoding,
+                device=device,
+            )
+        else:
+            self.meta = AscendPiecewiseGraphMeta(
+                max_batchs=max_batches,
+                max_tokens=max_tokens,
+                num_blocks=num_blocks,
+                is_decoding=is_decoding,
+                device=device,
+                head_dim=self.model_config.head_dim,
+                num_attention_heads=self.model_config.num_attention_heads,
+                dtype=self.model_config.dtype,
+                input_buffers=dict(),
+                output_buffers=dict(),
+                vocab_size=self.model_config.vocab_size,
+            )
+
     @record_function("capture_cudagraph")
     def capture(self, **kwargs):
         """Capture graph."""
+        if self._use_session:
+            return self.session.capture(**kwargs)
+
         logger.info(f"Capturing graph with meta: {self.meta}")
         print(f"######## Capturing graph with meta: {self.meta}", flush=True)
 
@@ -478,6 +499,9 @@ class AscendPiecewiseSingleGraphRunner:
     @record_function("forward_cudagraph")
     def forward(self, **kwargs):
         """forward."""
+        if self._use_session:
+            return self.session.forward(**kwargs)
+
         num_tokens = kwargs["input_ids"].size(-1)
         assert self.compiled_model is not None
         new_inputs = fill_buffers_cudagraph(self.meta, **kwargs)
@@ -494,6 +518,8 @@ class AscendPiecewiseSingleGraphRunner:
 
     def __del__(self):
         """del."""
+        if self._use_session:
+            return
         if self.compiled_model:
             del self.compiled_model
 
