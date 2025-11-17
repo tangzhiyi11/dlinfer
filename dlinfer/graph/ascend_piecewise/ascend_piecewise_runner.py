@@ -116,9 +116,9 @@ class PiecewiseRuntimeManager:
         if is_decoding and dp_meta is not None:
             meta = self._runner_meta
             padding_batch_size = meta.padding_batch_size
-            tp_size = self._get_capture_tokens(
-                padding_batch_size if padding_batch_size is not None else 1
-            )
+            if padding_batch_size is None:
+                return inputs
+            tp_size = self._get_capture_tokens(padding_batch_size)
             logger.info(
                 "[AscendRunner] sync_tp_size padding_batch_size=%s tp_size=%s "
                 "tp_sizes_before=%s moe_tp_sizes_before=%s",
