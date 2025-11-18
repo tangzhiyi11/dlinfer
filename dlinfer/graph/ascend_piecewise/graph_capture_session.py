@@ -471,7 +471,7 @@ class GraphCaptureSession:
 
         cache_limit = dynamo.config.cache_size_limit
         if cache_limit < 1000:
-            dynamo.config.cache_size_limit = 1000
+            dynamo.config.cache_size_limit = 3000
             if is_debug_enabled():
                 logger.info(
                     "Raised torch._dynamo cache_size_limit %s → %s for piecewise capture",
