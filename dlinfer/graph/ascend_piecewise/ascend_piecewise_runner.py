@@ -65,7 +65,42 @@ def _false(*args, **kwargs):
 
 
 class AscendPiecewiseSingleGraphRunner:
-    """Cuda single graph runner."""
+    """GraphCaptureSession-backed runner."""
+
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        max_batches: int,
+        max_tokens: int,
+        num_blocks: int,
+        is_decoding: bool,
+        pool: Any,
+        model_config: ModelConfig,
+        device: torch.device,
+    ):
+        self.session = GraphCaptureSession(
+            model=model,
+            model_config=model_config,
+            max_batches=max_batches,
+            max_tokens=max_tokens,
+            num_blocks=num_blocks,
+            is_decoding=is_decoding,
+            device=device,
+        )
+
+    @record_function("capture_cudagraph")
+    def capture(self, **kwargs):
+        """Capture graph."""
+        return self.session.capture(**kwargs)
+
+    @record_function("forward_cudagraph")
+    def forward(self, **kwargs):
+        """forward."""
+        return self.session.forward(**kwargs)
+
+
+class LegacyAscendPiecewiseSingleGraphRunner:
+    """Legacy runner retained for debugging."""
 
     def __init__(
         self,
@@ -81,6 +116,19 @@ class AscendPiecewiseSingleGraphRunner:
         self.model = model
         self.ctx_mgr = model.ctx_mgr
         self.model_config = model_config
+        self.meta = AscendPiecewiseGraphMeta(
+            max_batchs=max_batches,
+            max_tokens=max_tokens,
+            num_blocks=num_blocks,
+            is_decoding=is_decoding,
+            device=device,
+            head_dim=self.model_config.head_dim,
+            num_attention_heads=self.model_config.num_attention_heads,
+            dtype=self.model_config.dtype,
+            input_buffers=dict(),
+            output_buffers=dict(),
+            vocab_size=self.model_config.vocab_size,
+        )
         self.device = device
         self.max_batches = max_batches
         self.max_tokens = max_tokens
@@ -89,51 +137,9 @@ class AscendPiecewiseSingleGraphRunner:
         self.compiled_model = None
         self.backend = None
 
-        global _CAPTURE_SESSION_LOGGED
-        self._use_session = USE_CAPTURE_SESSION
-        if self._use_session:
-            if not _CAPTURE_SESSION_LOGGED:
-                logger.info(
-                    "[AscendRunner] GraphCaptureSession path enabled "
-                    "(set DLINFER_ASCEND_DISABLE_CAPTURE_SESSION=1 to use legacy runner)"
-                )
-                _CAPTURE_SESSION_LOGGED = True
-            self.session = GraphCaptureSession(
-                model=model,
-                model_config=model_config,
-                max_batches=max_batches,
-                max_tokens=max_tokens,
-                num_blocks=num_blocks,
-                is_decoding=is_decoding,
-                device=device,
-            )
-        else:
-            if not _CAPTURE_SESSION_LOGGED:
-                logger.info(
-                    "[AscendRunner] DLINFER_ASCEND_DISABLE_CAPTURE_SESSION=1 → "
-                    "falling back to legacy runner"
-                )
-                _CAPTURE_SESSION_LOGGED = True
-            self.meta = AscendPiecewiseGraphMeta(
-                max_batchs=max_batches,
-                max_tokens=max_tokens,
-                num_blocks=num_blocks,
-                is_decoding=is_decoding,
-                device=device,
-                head_dim=self.model_config.head_dim,
-                num_attention_heads=self.model_config.num_attention_heads,
-                dtype=self.model_config.dtype,
-                input_buffers=dict(),
-                output_buffers=dict(),
-                vocab_size=self.model_config.vocab_size,
-            )
-
     @record_function("capture_cudagraph")
     def capture(self, **kwargs):
         """Capture graph."""
-        if self._use_session:
-            return self.session.capture(**kwargs)
-
         if is_debug_enabled():
             logger.info("Capturing graph with meta: %s", self.meta)
 
@@ -143,7 +149,8 @@ class AscendPiecewiseSingleGraphRunner:
             self.backend = create_backend()
             if is_debug_enabled():
                 logger.info(
-                    f"Created new backend for runner (is_decoding={self.is_decoding})"
+                    "Created new backend for legacy runner (is_decoding=%s)",
+                    self.is_decoding,
                 )
 
         self.meta.input_buffers, self.meta.output_buffers = make_buffers_cudagraph(
@@ -160,7 +167,7 @@ class AscendPiecewiseSingleGraphRunner:
             dynamo.config.cache_size_limit = 1000
             if is_debug_enabled():
                 logger.info(
-                    "Raised torch._dynamo cache_size_limit %s → %s for piecewise capture",
+                    "Raised torch._dynamo cache_size_limit %s → %s for legacy capture",
                     cache_limit,
                     dynamo.config.cache_size_limit,
                 )
@@ -185,9 +192,6 @@ class AscendPiecewiseSingleGraphRunner:
     @record_function("forward_cudagraph")
     def forward(self, **kwargs):
         """forward."""
-        if self._use_session:
-            return self.session.forward(**kwargs)
-
         num_tokens = kwargs["input_ids"].size(-1)
         assert self.compiled_model is not None
         new_inputs = fill_buffers_cudagraph(self.meta, **kwargs)
@@ -204,8 +208,6 @@ class AscendPiecewiseSingleGraphRunner:
 
     def __del__(self):
         """del."""
-        if self._use_session:
-            return
         if self.compiled_model:
             del self.compiled_model
 
@@ -214,11 +216,11 @@ class RunnerCache:
     """Simple helper to manage cached graph runners."""
 
     def __init__(self) -> None:
-        self._entries: Dict[Any, AscendPiecewiseSingleGraphRunner] = {}
+        self._entries: Dict[Any, Any] = {}
 
     def get_or_create(
-        self, key: Any, factory: Callable[[], AscendPiecewiseSingleGraphRunner]
-    ) -> Tuple[AscendPiecewiseSingleGraphRunner, bool]:
+        self, key: Any, factory: Callable[[], Any]
+    ) -> Tuple[Any, bool]:
         runner = self._entries.get(key)
         created = False
         if runner is None:
@@ -249,6 +251,24 @@ class AscendPiecewiseGraphRunner(GraphRunner):
         self.enable_graph = self.check_enable_graph()
         self.graph_pool_handle = torch.cuda.graph_pool_handle()
         self._runner_cache = RunnerCache()
+        global _CAPTURE_SESSION_LOGGED
+        if not _CAPTURE_SESSION_LOGGED:
+            if USE_CAPTURE_SESSION:
+                logger.info(
+                    "[AscendRunner] GraphCaptureSession path enabled "
+                    "(set DLINFER_ASCEND_DISABLE_CAPTURE_SESSION=1 to use legacy runner)"
+                )
+            else:
+                logger.info(
+                    "[AscendRunner] DLINFER_ASCEND_DISABLE_CAPTURE_SESSION=1 → "
+                    "falling back to legacy runner"
+                )
+            _CAPTURE_SESSION_LOGGED = True
+        self._runner_cls = (
+            AscendPiecewiseSingleGraphRunner
+            if USE_CAPTURE_SESSION
+            else LegacyAscendPiecewiseSingleGraphRunner
+        )
         self.has_try_compile_model: bool = False
 
         override_env = os.getenv("DLINFER_ASCEND_CAPTURE_SIZES")
@@ -375,7 +395,7 @@ class AscendPiecewiseGraphRunner(GraphRunner):
         max_batches = max_tokens if is_decoding else self.max_batches
 
         def _factory():
-            return AscendPiecewiseSingleGraphRunner(
+            return self._runner_cls(
                 self.model,
                 max_batches=max_batches,
                 max_tokens=max_tokens,
