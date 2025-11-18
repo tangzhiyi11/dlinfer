@@ -14,7 +14,10 @@ from contextlib import ExitStack
 from unittest.mock import patch
 from collections import OrderedDict
 from lmdeploy.utils import get_logger
-from dlinfer.graph.ascend_piecewise.utils import is_debug_enabled
+from dlinfer.graph.ascend_piecewise.utils import (
+    is_acl_graph_debug_enabled,
+    is_debug_enabled,
+)
 
 logger = get_logger("dlinfer.acl_graph")
 
@@ -31,7 +34,7 @@ def _record_capture_attempt(cache_key: Tuple[Any, ...], cache_size: int) -> int:
     global _capture_attempts
     _capture_attempts += 1
     attempt_id = _capture_attempts
-    if is_debug_enabled():
+    if is_acl_graph_debug_enabled():
         logger.info(
             "[ACLGraphCapture] attempt #%s cache_key=%s cache_size=%s active_graphs=%s",
             attempt_id,
@@ -46,7 +49,7 @@ def _record_capture_success(capture_id: int, cache_key: Tuple[Any, ...]) -> None
     """Track successful captures."""
     global _capture_success
     _capture_success += 1
-    if is_debug_enabled():
+    if is_acl_graph_debug_enabled():
         logger.info(
             "[ACLGraphCapture] success #%s cache_key=%s active_graphs=%s",
             capture_id,
@@ -57,7 +60,7 @@ def _record_capture_success(capture_id: int, cache_key: Tuple[Any, ...]) -> None
 
 def _record_capture_failure(capture_id: int, cache_key: Tuple[Any, ...], exc: Exception):
     """Log capture failures with aggregate stats."""
-    if is_debug_enabled():
+    if is_acl_graph_debug_enabled():
         failures = _capture_attempts - _capture_success
         logger.error(
             "[ACLGraphCapture] failure #%s cache_key=%s active_graphs=%s "
@@ -75,7 +78,7 @@ def _record_capture_failure(capture_id: int, cache_key: Tuple[Any, ...], exc: Ex
 def _increment_active_graphs(cache_key: Tuple[Any, ...]) -> None:
     global _active_acl_graphs
     _active_acl_graphs += 1
-    if is_debug_enabled():
+    if is_acl_graph_debug_enabled():
         logger.info(
             "[ACLGraphCapture] active_graphs=%s after caching %s",
             _active_acl_graphs,
@@ -86,7 +89,7 @@ def _increment_active_graphs(cache_key: Tuple[Any, ...]) -> None:
 def _decrement_active_graphs(cache_key: Tuple[Any, ...]) -> None:
     global _active_acl_graphs
     _active_acl_graphs = max(_active_acl_graphs - 1, 0)
-    if is_debug_enabled():
+    if is_acl_graph_debug_enabled():
         logger.info(
             "[ACLGraphCapture] active_graphs=%s after releasing %s",
             _active_acl_graphs,
@@ -171,7 +174,8 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
         self._use_graph = self.auto_detect_stage or bool(is_decoding)
 
         self.graph_pool = graph_pool
-        self.debug_mode = logger.level <= 10
+        self.debug_mode = is_debug_enabled()
+        self.acl_debug = is_acl_graph_debug_enabled()
 
         self.max_cache_size = max_cache_size
         self.cache: OrderedDict[Tuple[Any, ...], ACLGraphEntry] = OrderedDict()
@@ -286,10 +290,10 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
             entry.arg_views = list(views)
             entry.arg_buffers = list(buffers)
 
-            if self.debug_mode:
-                entry.input_addresses = [view.data_ptr() for view in views]
-                logger.debug(
-                    "Captured arg buffer addresses for %s: %s",
+        if self.acl_debug:
+            entry.input_addresses = [view.data_ptr() for view in views]
+            logger.debug(
+                "Captured arg buffer addresses for %s: %s",
                     cache_key,
                     entry.input_addresses,
                 )
@@ -330,7 +334,7 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
             acl_graph_capture_count += 1
             _record_capture_success(capture_id, cache_key)
 
-            if is_debug_enabled():
+            if self.acl_debug:
                 logger.info("ACL Graph captured for shapes %s", cache_key)
                 logger.info("Total ACL Graph captures: %s", acl_graph_capture_count)
 
