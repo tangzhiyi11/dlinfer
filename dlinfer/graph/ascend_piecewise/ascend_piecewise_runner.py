@@ -518,7 +518,7 @@ class AscendPiecewiseGraphRunner(GraphRunner):
                 dp_meta.moe_tp_sizes,
             )
             if os.environ.get("DLINFER_ASCEND_DEBUG_CAPTURE", "0") == "1":
-                logger.debug(
+                logger.info(
                     "[AscendRunner] synced padding_batch=%s capture_tp=%s",
                     padding_batch_size,
                     tp_size,
