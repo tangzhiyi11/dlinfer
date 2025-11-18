@@ -306,6 +306,9 @@ class AscendPiecewiseGraphRunner(GraphRunner):
                     "Invalid DLINFER_ASCEND_MAX_RUNNERS=%s, ignoring.", max_runners_env
                 )
         self._runner_cache = RunnerCache(max_entries=max_runners)
+        self._log_runner_stats = (
+            os.getenv("DLINFER_ASCEND_LOG_RUNNER_STATS", "0") == "1"
+        )
         global _CAPTURE_SESSION_LOGGED
         if not _CAPTURE_SESSION_LOGGED:
             if USE_CAPTURE_SESSION:
@@ -471,12 +474,14 @@ class AscendPiecewiseGraphRunner(GraphRunner):
             try:
                 output = runner.capture(**kwargs)
                 stats.capture_count += 1
+                self._maybe_log_runner_stats()
                 return output
             finally:
                 config.is_capturing = original_is_capturing
 
         output = runner.forward(**kwargs)
         stats.reuse_count += 1
+        self._maybe_log_runner_stats()
         return output
 
     @record_function("prepare_inputs_for_generation")
@@ -516,6 +521,10 @@ class AscendPiecewiseGraphRunner(GraphRunner):
                 info["reuse_count"],
                 session_info,
             )
+
+    def _maybe_log_runner_stats(self) -> None:
+        if self._log_runner_stats:
+            self.log_runner_stats()
 
     def update_inputs(self, inputs):
         """Update inputs."""
