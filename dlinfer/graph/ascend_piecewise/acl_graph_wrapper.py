@@ -26,7 +26,6 @@ logger = get_logger("dlinfer.acl_graph")
 acl_graph_capture_count = 0
 _capture_attempts = 0
 _capture_success = 0
-_active_acl_graphs = 0
 
 
 def _record_capture_attempt(cache_key: Tuple[Any, ...], cache_size: int) -> int:
@@ -36,11 +35,10 @@ def _record_capture_attempt(cache_key: Tuple[Any, ...], cache_size: int) -> int:
     attempt_id = _capture_attempts
     if is_acl_graph_debug_enabled():
         logger.info(
-            "[ACLGraphCapture] attempt #%s cache_key=%s cache_size=%s active_graphs=%s",
+            "[ACLGraphCapture] attempt #%s cache_key=%s cache_size=%s",
             attempt_id,
             cache_key,
             cache_size,
-            _active_acl_graphs,
         )
     return attempt_id
 
@@ -51,10 +49,9 @@ def _record_capture_success(capture_id: int, cache_key: Tuple[Any, ...]) -> None
     _capture_success += 1
     if is_acl_graph_debug_enabled():
         logger.info(
-            "[ACLGraphCapture] success #%s cache_key=%s active_graphs=%s",
+            "[ACLGraphCapture] success #%s cache_key=%s",
             capture_id,
             cache_key,
-            _active_acl_graphs,
         )
 
 
@@ -63,38 +60,15 @@ def _record_capture_failure(capture_id: int, cache_key: Tuple[Any, ...], exc: Ex
     if is_acl_graph_debug_enabled():
         failures = _capture_attempts - _capture_success
         logger.error(
-            "[ACLGraphCapture] failure #%s cache_key=%s active_graphs=%s "
-            "attempts=%s successes=%s failures=%s reason=%s",
+            "[ACLGraphCapture] failure #%s cache_key=%s attempts=%s successes=%s failures=%s reason=%s",
             capture_id,
             cache_key,
-            _active_acl_graphs,
             _capture_attempts,
             _capture_success,
             failures,
             exc,
         )
 
-
-def _increment_active_graphs(cache_key: Tuple[Any, ...]) -> None:
-    global _active_acl_graphs
-    _active_acl_graphs += 1
-    if is_acl_graph_debug_enabled():
-        logger.info(
-            "[ACLGraphCapture] active_graphs=%s after caching %s",
-            _active_acl_graphs,
-            cache_key,
-        )
-
-
-def _decrement_active_graphs(cache_key: Tuple[Any, ...]) -> None:
-    global _active_acl_graphs
-    _active_acl_graphs = max(_active_acl_graphs - 1, 0)
-    if is_acl_graph_debug_enabled():
-        logger.info(
-            "[ACLGraphCapture] active_graphs=%s after releasing %s",
-            _active_acl_graphs,
-            cache_key,
-        )
 
 @dataclass
 class ACLGraphEntry:
