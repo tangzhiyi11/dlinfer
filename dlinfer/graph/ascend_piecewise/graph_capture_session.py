@@ -371,6 +371,7 @@ class GraphCaptureSession:
         self.ctx_mgr = model.ctx_mgr
         self._capture_count = 0
         self._replay_count = 0
+        self._compile_miss_count = 0
         self._last_padded_batch: Optional[int] = None
 
         self.meta = AscendPiecewiseGraphMeta(
@@ -422,6 +423,9 @@ class GraphCaptureSession:
     @record_function("ascend_piecewise_forward")
     def forward(self, **kwargs):
         """Replay captured graph."""
+        if self._compile_miss_count and self._compiled_model is None:
+            # shouldn't happen, but defensive
+            logger.warning("GraphCaptureSession compile miss despite recorded misses.")
         if self._compiled_model is None:
             return self.capture(**kwargs)
 
@@ -481,6 +485,7 @@ class GraphCaptureSession:
             fullgraph=True,
             dynamic=False,
         )
+        self._compile_miss_count += 1
         return self._compiled_model
 
     def stats(self) -> Dict[str, Any]:
@@ -488,6 +493,7 @@ class GraphCaptureSession:
         return {
             "capture_count": self._capture_count,
             "replay_count": self._replay_count,
+            "compile_miss_count": self._compile_miss_count,
             "last_padded_batch": self._last_padded_batch,
             "is_decoding": self.meta.is_decoding,
         }
