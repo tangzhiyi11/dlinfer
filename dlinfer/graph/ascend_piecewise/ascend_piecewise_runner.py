@@ -4,6 +4,7 @@ lmdeploywarmup
 """
 
 import os
+import logging
 from collections import OrderedDict
 from dataclasses import dataclass
 import torch
@@ -28,6 +29,8 @@ from dlinfer.graph.ascend_piecewise.utils import is_debug_enabled
 from torch.profiler import record_function
 
 logger = get_logger("dlinfer")
+if os.environ.get("DLINFER_ASCEND_DEBUG_CAPTURE", "0") == "1":
+    logger.setLevel(logging.DEBUG)
 
 
 DISABLE_CAPTURE_SESSION = (

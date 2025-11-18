@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -20,6 +21,8 @@ from .utils import is_debug_enabled
 from .piecewise_backend import create_backend, get_ascend_compatible_size
 
 logger = get_logger("dlinfer.ascend.capture")
+if os.environ.get("DLINFER_ASCEND_DEBUG_CAPTURE", "0") == "1":
+    logger.setLevel(logging.DEBUG)
 
 BuffType = Dict[str, Tensor]
 
