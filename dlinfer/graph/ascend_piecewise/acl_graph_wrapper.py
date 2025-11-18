@@ -332,10 +332,8 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
         return entry.output
 
     def _add_to_cache(self, cache_key: Tuple[Any, ...], entry: ACLGraphEntry) -> None:
-        is_new_entry = cache_key not in self.cache
-        if is_new_entry:
+        if cache_key not in self.cache:
             self.cache[cache_key] = entry
-            _increment_active_graphs(cache_key)
         if is_debug_enabled():
             logger.debug(
                 "Added cache entry %s (cache size: %d)", cache_key, len(self.cache)
