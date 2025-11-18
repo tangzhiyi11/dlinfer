@@ -1,8 +1,23 @@
-"""
-FX Graph debugging utilities for dlinfer ascend piecewise compilation.
-"""
+
+
+
+"""Shared constants and helpers for Ascend piecewise graph mode."""
+
+from __future__ import annotations
+from functools import lru_cache
 
 import os
+
+
+@lru_cache(maxsize=1)
+def is_debug_enabled() -> bool:
+    """Return True when verbose debugging for piecewise graph mode is on."""
+    return os.environ.get("DLINFER_ASCEND_PIECEWISE_GRAPH_DEBUG", "0") == "1"
+
+
+__all__ = [
+    "is_debug_enabled",
+]
 import torch.fx as fx
 from typing import List, Dict, Any, Optional
 from collections import Counter
@@ -231,3 +246,6 @@ def debug_compilation_summary(
         logger.info(f"Graph splitting overhead: {overhead_ratio:.1f}%")
 
     logger.info("=" * 80)
+
+
+PIECEWISE_DEBUG_ENV = "DLINFER_ASCEND_PIECEWISE_GRAPH_DEBUG"

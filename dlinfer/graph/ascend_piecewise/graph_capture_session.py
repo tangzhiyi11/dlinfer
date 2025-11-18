@@ -13,7 +13,7 @@ from lmdeploy.pytorch.config import ModelConfig
 from lmdeploy.pytorch.models.utils.cudagraph import CudaGraphMeta
 from lmdeploy.utils import get_logger
 
-from .common import is_debug_enabled
+from .utils import is_debug_enabled
 from .piecewise_backend import create_backend, get_ascend_compatible_size
 
 logger = get_logger("dlinfer.ascend.capture")
