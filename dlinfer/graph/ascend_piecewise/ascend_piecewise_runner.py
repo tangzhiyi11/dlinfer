@@ -242,8 +242,20 @@ class RunnerCache:
     def clear(self) -> None:
         self._entries.clear()
 
-    def stats_snapshot(self) -> Dict[Any, RunnerStats]:
-        return {key: value[1] for key, value in self._entries.items()}
+    def stats_snapshot(self) -> Dict[Any, Dict[str, Any]]:
+        snapshot: Dict[Any, Dict[str, Any]] = {}
+        for key, (runner, stats) in self._entries.items():
+            entry: Dict[str, Any] = {
+                "capture_count": stats.capture_count,
+                "reuse_count": stats.reuse_count,
+            }
+            if hasattr(runner, "stats"):
+                try:
+                    entry["session"] = runner.stats()
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning("Failed to collect session stats for %s: %s", key, exc)
+            snapshot[key] = entry
+        return snapshot
 
 
 class AscendPiecewiseGraphRunner(GraphRunner):
@@ -455,9 +467,25 @@ class AscendPiecewiseGraphRunner(GraphRunner):
         """Remove all graphs to prevent hanging on exit."""
         self._runner_cache.clear()
 
-    def runner_stats(self) -> Dict[Any, RunnerStats]:
+    def runner_stats(self) -> Dict[Any, Dict[str, Any]]:
         """Return runner capture/reuse stats."""
         return self._runner_cache.stats_snapshot()
+
+    def log_runner_stats(self):
+        """Log cached runner stats for debugging."""
+        stats = self.runner_stats()
+        if not stats:
+            logger.info("No runner stats available.")
+            return
+        for key, info in stats.items():
+            session_info = info.get("session")
+            logger.info(
+                "Runner %s: captures=%s reuse=%s session=%s",
+                key,
+                info["capture_count"],
+                info["reuse_count"],
+                session_info,
+            )
 
     def update_inputs(self, inputs):
         """Update inputs."""
