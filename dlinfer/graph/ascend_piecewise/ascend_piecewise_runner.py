@@ -514,6 +514,12 @@ class AscendPiecewiseGraphRunner(GraphRunner):
                 dp_meta.tp_sizes,
                 dp_meta.moe_tp_sizes,
             )
+            if os.environ.get("DLINFER_ASCEND_DEBUG_CAPTURE", "0") == "1":
+                logger.debug(
+                    "[AscendRunner] synced padding_batch=%s capture_tp=%s",
+                    padding_batch_size,
+                    tp_size,
+                )
         return inputs
 
     def get_capture_batch_sizes(self) -> List[int]:

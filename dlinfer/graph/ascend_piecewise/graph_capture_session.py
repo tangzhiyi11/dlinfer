@@ -501,7 +501,17 @@ class GraphCaptureSession:
 
         with self._profiler.stage_timer("capture.fill_buffers"):
             padded_kwargs = fill_buffers_cudagraph(self.meta, **kwargs)
-        context = self.ctx_mgr.current_context()
+            if os.environ.get("DLINFER_ASCEND_DEBUG_CAPTURE", "0") == "1":
+                input_ids = padded_kwargs.get("input_ids")
+                attn_metadata = padded_kwargs.get("attn_metadata")
+                meta = getattr(attn_metadata, "kv_seqlens", None)
+                logger.debug(
+                    "[CaptureDebug] padded input_ids=%s kv_seqlens=%s q_seqlens=%s",
+                    tuple(input_ids.shape) if input_ids is not None else None,
+                    tuple(meta.shape) if meta is not None else None,
+                    getattr(attn_metadata, "q_seqlens", None),
+                )
+            context = self.ctx_mgr.current_context()
         update_context_cudagraph(self.meta, context)
         self._last_padded_batch = context.block_offsets.shape[0]
 
