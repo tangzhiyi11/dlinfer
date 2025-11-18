@@ -263,6 +263,16 @@ class AscendPiecewiseGraphRunner(GraphRunner):
         self._log_runner_stats = (
             os.getenv("DLINFER_ASCEND_LOG_RUNNER_STATS", "0") == "1"
         )
+        interval_env = os.getenv("DLINFER_ASCEND_LOG_RUNNER_STATS_INTERVAL")
+        try:
+            self._log_runner_stats_interval = max(1, int(interval_env)) if interval_env else 100
+        except ValueError:
+            logger.warning(
+                "Invalid DLINFER_ASCEND_LOG_RUNNER_STATS_INTERVAL=%s, using default 100",
+                interval_env,
+            )
+            self._log_runner_stats_interval = 100
+        self._stats_log_counter = 0
         global _CAPTURE_SESSION_LOGGED
         if not _CAPTURE_SESSION_LOGGED:
             if USE_CAPTURE_SESSION:
@@ -428,14 +438,14 @@ class AscendPiecewiseGraphRunner(GraphRunner):
             try:
                 output = runner.capture(**kwargs)
                 stats.capture_count += 1
-                self._maybe_log_runner_stats()
+                self._maybe_log_runner_stats(created=True)
                 return output
             finally:
                 config.is_capturing = original_is_capturing
 
         output = runner.forward(**kwargs)
         stats.reuse_count += 1
-        self._maybe_log_runner_stats()
+        self._maybe_log_runner_stats(created=False)
         return output
 
     @record_function("prepare_inputs_for_generation")
@@ -476,8 +486,11 @@ class AscendPiecewiseGraphRunner(GraphRunner):
                 session_info,
             )
 
-    def _maybe_log_runner_stats(self) -> None:
-        if self._log_runner_stats:
+    def _maybe_log_runner_stats(self, created: bool) -> None:
+        if not self._log_runner_stats:
+            return
+        self._stats_log_counter += 1
+        if created or (self._stats_log_counter % self._log_runner_stats_interval == 0):
             self.log_runner_stats()
 
     def update_inputs(self, inputs):
