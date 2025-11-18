@@ -20,15 +20,8 @@ from dlinfer.graph.ascend_piecewise.piecewise_backend import (
     get_capture_batch_sizes as backend_capture_batch_sizes,
 )
 from dlinfer.graph.ascend_piecewise.bucket_utils import limit_capture_bucket_list
-from dlinfer.graph.ascend_piecewise.bucket_utils import adjust_capture_batch_sizes
 from lmdeploy.pytorch.model_inputs import StepContext, get_step_ctx_manager
-from dlinfer.graph.ascend_piecewise.graph_capture_session import (
-    GraphCaptureSession,
-    AscendPiecewiseGraphMeta,
-    make_buffers_cudagraph,
-    fill_buffers_cudagraph,
-    update_context_cudagraph,
-)
+from dlinfer.graph.ascend_piecewise.graph_capture_session import GraphCaptureSession
 
 from torch.profiler import record_function
 
@@ -47,20 +40,6 @@ def is_debug_enabled() -> bool:
     import os
 
     return os.environ.get("DLINFER_ASCEND_PIECEWISE_GRAPH_DEBUG", "0") == "1"
-
-
-
-
-def update_context_cudagraph(graph_meta, context):
-    """update step context with input buffers."""
-    input_buffers = graph_meta.input_buffers
-    context.block_offsets = input_buffers["block_offsets"]
-    context.q_seqlens = input_buffers["q_seqlens"]
-    context.kv_seqlens = input_buffers["kv_seqlens"]
-    context.q_start_loc = input_buffers["q_start_loc"]
-    context.kv_start_indices = input_buffers["kv_start_indices"]
-
-
 def _false(*args, **kwargs):
     """Default value of not support cuda graph."""
     return False
