@@ -19,8 +19,79 @@ from dlinfer.graph.ascend_piecewise.utils import is_debug_enabled
 logger = get_logger("dlinfer.acl_graph")
 
 
-# Global counter for ACL graph capture statistics
+# Global counter for ACL graph capture statistics and resource tracking.
 acl_graph_capture_count = 0
+_capture_attempts = 0
+_capture_success = 0
+_active_acl_graphs = 0
+
+
+def _record_capture_attempt(cache_key: Tuple[Any, ...], cache_size: int) -> int:
+    """Track capture attempt counts for debugging resource usage."""
+    global _capture_attempts
+    _capture_attempts += 1
+    attempt_id = _capture_attempts
+    if is_debug_enabled():
+        logger.info(
+            "[ACLGraphCapture] attempt #%s cache_key=%s cache_size=%s active_graphs=%s",
+            attempt_id,
+            cache_key,
+            cache_size,
+            _active_acl_graphs,
+        )
+    return attempt_id
+
+
+def _record_capture_success(capture_id: int, cache_key: Tuple[Any, ...]) -> None:
+    """Track successful captures."""
+    global _capture_success
+    _capture_success += 1
+    if is_debug_enabled():
+        logger.info(
+            "[ACLGraphCapture] success #%s cache_key=%s active_graphs=%s",
+            capture_id,
+            cache_key,
+            _active_acl_graphs,
+        )
+
+
+def _record_capture_failure(capture_id: int, cache_key: Tuple[Any, ...], exc: Exception):
+    """Log capture failures with aggregate stats."""
+    if is_debug_enabled():
+        failures = _capture_attempts - _capture_success
+        logger.error(
+            "[ACLGraphCapture] failure #%s cache_key=%s active_graphs=%s "
+            "attempts=%s successes=%s failures=%s reason=%s",
+            capture_id,
+            cache_key,
+            _active_acl_graphs,
+            _capture_attempts,
+            _capture_success,
+            failures,
+            exc,
+        )
+
+
+def _increment_active_graphs(cache_key: Tuple[Any, ...]) -> None:
+    global _active_acl_graphs
+    _active_acl_graphs += 1
+    if is_debug_enabled():
+        logger.info(
+            "[ACLGraphCapture] active_graphs=%s after caching %s",
+            _active_acl_graphs,
+            cache_key,
+        )
+
+
+def _decrement_active_graphs(cache_key: Tuple[Any, ...]) -> None:
+    global _active_acl_graphs
+    _active_acl_graphs = max(_active_acl_graphs - 1, 0)
+    if is_debug_enabled():
+        logger.info(
+            "[ACLGraphCapture] active_graphs=%s after releasing %s",
+            _active_acl_graphs,
+            cache_key,
+        )
 
 # Default maximum number of cached graphs to prevent memory bloat
 DEFAULT_MAX_CACHE_SIZE = 8
@@ -199,6 +270,7 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
         global acl_graph_capture_count
         self._ensure_signature(args, kwargs)
         entry = ACLGraphEntry(cache_key=cache_key)
+        capture_id = _record_capture_attempt(cache_key, len(self.cache))
 
         tensor_args = [
             (idx, arg) for idx, arg in enumerate(args) if isinstance(arg, torch.Tensor)
@@ -256,6 +328,7 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
 
             self._add_to_cache(cache_key, entry)
             acl_graph_capture_count += 1
+            _record_capture_success(capture_id, cache_key)
 
             if is_debug_enabled():
                 logger.info("ACL Graph captured for shapes %s", cache_key)
@@ -268,6 +341,7 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
             if acl_graph is not None:
                 del acl_graph
             logger.error("Failed to capture ACL graph for shapes %s: %s", cache_key, e)
+            _record_capture_failure(capture_id, cache_key, e)
             raise
         finally:
             config.is_capturing = original_is_capturing
@@ -292,12 +366,16 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
                 logger.debug("Evicted cache entry %s due to size limit", oldest_key)
 
             if oldest_entry.acl_graph is not None:
+                _decrement_active_graphs(oldest_key)
                 del oldest_entry.acl_graph
             oldest_entry.output = None
             oldest_entry.arg_buffers = None
             oldest_entry.arg_views = None
 
+        is_new_entry = cache_key not in self.cache
         self.cache[cache_key] = entry
+        if is_new_entry and entry.acl_graph is not None:
+            _increment_active_graphs(cache_key)
         if is_debug_enabled():
             logger.debug(
                 "Added cache entry %s (cache size: %d)", cache_key, len(self.cache)
