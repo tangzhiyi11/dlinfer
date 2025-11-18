@@ -165,13 +165,13 @@ def limit_capture_buckets(
         parallel_factor = 1 + num_comm_groups + int(enable_expert_parallel) + int(
             shared_overlap
         )
-        # if is_moe and dp > 1:
-        #     parallel_factor += 1
-        # else:
-        #     capture_limit -= parallel_factor * resources_per_graph
+        if is_moe and dp > 1:
+            parallel_factor += 1
+        else:
+            capture_limit -= parallel_factor * resources_per_graph
         # Tighter control to avoid graph capture failures caused by too many batches
-        parallel_factor += 1
-        capture_limit -= parallel_factor * resources_per_graph
+        # parallel_factor += 1
+        # capture_limit -= parallel_factor * resources_per_graph
 
         parallel_factor = max(parallel_factor, 1)
         max_num_batch_sizes = math.floor(
