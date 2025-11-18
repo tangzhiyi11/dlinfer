@@ -4,6 +4,7 @@ lmdeploywarmup
 """
 
 import os
+from dataclasses import dataclass
 import torch
 from torch import Tensor
 from typing import Any, Callable, Dict, List, Tuple
@@ -212,25 +213,37 @@ class LegacyAscendPiecewiseSingleGraphRunner:
             del self.compiled_model
 
 
+@dataclass
+class RunnerStats:
+    capture_count: int = 0
+    reuse_count: int = 0
+
+
 class RunnerCache:
     """Simple helper to manage cached graph runners."""
 
     def __init__(self) -> None:
-        self._entries: Dict[Any, Any] = {}
+        self._entries: Dict[Any, Tuple[Any, RunnerStats]] = {}
 
     def get_or_create(
         self, key: Any, factory: Callable[[], Any]
-    ) -> Tuple[Any, bool]:
-        runner = self._entries.get(key)
+    ) -> Tuple[Any, RunnerStats, bool]:
+        entry = self._entries.get(key)
         created = False
-        if runner is None:
+        if entry is None:
             runner = factory()
-            self._entries[key] = runner
+            stats = RunnerStats()
+            entry = (runner, stats)
+            self._entries[key] = entry
             created = True
-        return runner, created
+        runner, stats = entry
+        return runner, stats, created
 
     def clear(self) -> None:
         self._entries.clear()
+
+    def stats_snapshot(self) -> Dict[Any, RunnerStats]:
+        return {key: value[1] for key, value in self._entries.items()}
 
 
 class AscendPiecewiseGraphRunner(GraphRunner):
@@ -406,7 +419,7 @@ class AscendPiecewiseGraphRunner(GraphRunner):
                 device=self.device,
             )
 
-        runner, created = self._runner_cache.get_or_create(graph_key, _factory)
+        runner, stats, created = self._runner_cache.get_or_create(graph_key, _factory)
         if created:
             from dlinfer.graph import config
 
@@ -414,11 +427,15 @@ class AscendPiecewiseGraphRunner(GraphRunner):
             config.is_capturing = True
 
             try:
-                return runner.capture(**kwargs)
+                output = runner.capture(**kwargs)
+                stats.capture_count += 1
+                return output
             finally:
                 config.is_capturing = original_is_capturing
 
-        return runner.forward(**kwargs)
+        output = runner.forward(**kwargs)
+        stats.reuse_count += 1
+        return output
 
     @record_function("prepare_inputs_for_generation")
     def prepare_inputs_for_generation(
@@ -437,6 +454,10 @@ class AscendPiecewiseGraphRunner(GraphRunner):
     def reset(self):
         """Remove all graphs to prevent hanging on exit."""
         self._runner_cache.clear()
+
+    def runner_stats(self) -> Dict[Any, RunnerStats]:
+        """Return runner capture/reuse stats."""
+        return self._runner_cache.stats_snapshot()
 
     def update_inputs(self, inputs):
         """Update inputs."""
