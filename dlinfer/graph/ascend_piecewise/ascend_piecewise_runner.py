@@ -372,6 +372,9 @@ class AscendPiecewiseGraphRunner(GraphRunner):
                 limited_sizes = self._capture_batch_sizes
             self._capture_batch_sizes = limited_sizes
 
+        # Ensure capture sizes are sorted ascending so _get_capture_tokens selects minimal bucket.
+        self._capture_batch_sizes = sorted(set(self._capture_batch_sizes))
+
     def check_enable_graph(self):
         """Check enable graph."""
         if self.backend_config.eager_mode:
