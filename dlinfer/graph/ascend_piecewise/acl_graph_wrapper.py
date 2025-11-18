@@ -279,7 +279,7 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
         tensor_args = [
             (idx, arg) for idx, arg in enumerate(args) if isinstance(arg, torch.Tensor)
         ]
-
+        views = []
         if tensor_args:
             indices, shapes, views, buffers = zip(
                 *[(idx, arg.shape, arg, arg) for idx, arg in tensor_args]
@@ -290,10 +290,10 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
             entry.arg_views = list(views)
             entry.arg_buffers = list(buffers)
 
-        if self.acl_debug:
-            entry.input_addresses = [view.data_ptr() for view in views]
-            logger.debug(
-                "Captured arg buffer addresses for %s: %s",
+            if self.acl_debug:
+                entry.input_addresses = [view.data_ptr() for view in views]
+                logger.debug(
+                    "Captured arg buffer addresses for %s: %s",
                     cache_key,
                     entry.input_addresses,
                 )
@@ -302,6 +302,8 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
             entry.arg_shapes = []
             entry.arg_views = []
             entry.arg_buffers = []
+            if self.acl_debug:
+                entry.input_addresses = []
 
         from dlinfer.graph import config
 
