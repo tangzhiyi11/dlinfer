@@ -22,6 +22,15 @@ def is_debug_enabled() -> bool:
     return os.environ.get("DLINFER_ASCEND_PIECEWISE_GRAPH_DEBUG", "0") == "1"
 
 
+@lru_cache(maxsize=1)
+def is_acl_graph_debug_enabled() -> bool:
+    """Dedicated flag for ACL graph level debugging."""
+    env = os.environ.get("DLINFER_ASCEND_ACL_GRAPH_DEBUG")
+    if env is not None:
+        return env == "1"
+    return is_debug_enabled()
+
+
 def is_fx_graph_debug_enabled() -> bool:
     """Check if FX graph debugging is enabled via environment variable."""
     return is_debug_enabled()
@@ -207,6 +216,7 @@ def debug_compilation_summary(
 
 __all__ = [
     "is_debug_enabled",
+    "is_acl_graph_debug_enabled",
     "is_fx_graph_debug_enabled",
     "debug_fx_graph_structure",
     "debug_fx_graph_nodes",
