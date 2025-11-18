@@ -96,10 +96,6 @@ def _decrement_active_graphs(cache_key: Tuple[Any, ...]) -> None:
             cache_key,
         )
 
-# Default maximum number of cached graphs to prevent memory bloat
-DEFAULT_MAX_CACHE_SIZE = 8
-
-
 @dataclass
 class ACLGraphEntry:
     """ACL Graph cache entry storing captured graph metadata and buffers."""
@@ -154,12 +150,9 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
         is_last_graph: bool = False,
         graph_pool: Optional[Any] = None,
         is_decoding: Optional[bool] = None,
-        max_cache_size: int = DEFAULT_MAX_CACHE_SIZE,
     ):
         if not callable(runnable):
             raise ValueError("runnable must be callable")
-        if max_cache_size <= 0:
-            raise ValueError("max_cache_size must be positive")
         if graph_pool is None:
             raise ValueError("graph_pool cannot be None")
 
@@ -177,7 +170,6 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
         self.debug_mode = is_debug_enabled()
         self.acl_debug = is_acl_graph_debug_enabled()
 
-        self.max_cache_size = max_cache_size
         self.cache: OrderedDict[Tuple[Any, ...], ACLGraphEntry] = OrderedDict()
 
         self._canonical_signature: Optional[Tuple[Tuple[str, Tuple[int, ...]], ...]] = (
@@ -366,21 +358,9 @@ class AscendPiecewiseGraphWrapper(torch.nn.Module):
         return entry.output
 
     def _add_to_cache(self, cache_key: Tuple[Any, ...], entry: ACLGraphEntry) -> None:
-        if len(self.cache) >= self.max_cache_size and cache_key not in self.cache:
-            oldest_key, oldest_entry = self.cache.popitem(last=False)
-            if is_debug_enabled():
-                logger.debug("Evicted cache entry %s due to size limit", oldest_key)
-
-            if oldest_entry.acl_graph is not None:
-                _decrement_active_graphs(oldest_key)
-                del oldest_entry.acl_graph
-            oldest_entry.output = None
-            oldest_entry.arg_buffers = None
-            oldest_entry.arg_views = None
-
         is_new_entry = cache_key not in self.cache
-        self.cache[cache_key] = entry
-        if is_new_entry and entry.acl_graph is not None:
+        if is_new_entry:
+            self.cache[cache_key] = entry
             _increment_active_graphs(cache_key)
         if is_debug_enabled():
             logger.debug(
