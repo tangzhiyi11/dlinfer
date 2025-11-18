@@ -484,9 +484,7 @@ class GraphCaptureSession:
         self._replay_count += 1
         elapsed = time.perf_counter() - t_start
         self._replay_time_total += elapsed
-        if self._profile_enabled and (
-            self._replay_count % self._profile_interval == 0
-        ):
+        if self._profile_enabled and (self._replay_count % self._profile_interval == 0):
             logger.info(
                 "[ForwardProfile] reuse=%s padded_batch=%s total=%.3fms",
                 self._replay_count,
