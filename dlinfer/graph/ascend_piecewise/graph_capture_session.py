@@ -369,6 +369,9 @@ class GraphCaptureSession:
         self.model = model
         self.model_config = model_config
         self.ctx_mgr = model.ctx_mgr
+        self._capture_count = 0
+        self._replay_count = 0
+        self._last_padded_batch: Optional[int] = None
 
         self.meta = AscendPiecewiseGraphMeta(
             max_batchs=max_batches,
@@ -403,6 +406,7 @@ class GraphCaptureSession:
         padded_kwargs = fill_buffers_cudagraph(self.meta, **kwargs)
         context = self.ctx_mgr.current_context()
         update_context_cudagraph(self.meta, context)
+        self._last_padded_batch = context.block_offsets.shape[0]
 
         compiled_model = self._compile_model()
         output = compiled_model(**padded_kwargs)
@@ -411,6 +415,7 @@ class GraphCaptureSession:
             logits_buffer = torch.empty_like(output, device=output.device)
             self.meta.output_buffers["logits"] = logits_buffer
         logits_buffer.copy_(output)
+        self._capture_count += 1
 
         return logits_buffer[:, :num_tokens]
 
@@ -424,11 +429,25 @@ class GraphCaptureSession:
         new_inputs = fill_buffers_cudagraph(self.meta, **kwargs)
         context = self.ctx_mgr.current_context()
         update_context_cudagraph(self.meta, context)
+        padded_batch = context.block_offsets.shape[0]
+        if (
+            self._last_padded_batch is not None
+            and padded_batch != self._last_padded_batch
+        ):
+            logger.warning(
+                "GraphCaptureSession padded batch size changed %s → %s "
+                "(is_decoding=%s)",
+                self._last_padded_batch,
+                padded_batch,
+                self.meta.is_decoding,
+            )
+            self._last_padded_batch = padded_batch
         compiled_out = self._compiled_model(**new_inputs)
 
         logits_buffer = self.meta.output_buffers["logits"]
         if compiled_out.data_ptr() != logits_buffer.data_ptr():
             logits_buffer.copy_(compiled_out)
+        self._replay_count += 1
         return logits_buffer[:, :num_tokens]
 
     def _ensure_backend(self) -> None:
@@ -463,6 +482,15 @@ class GraphCaptureSession:
             dynamic=False,
         )
         return self._compiled_model
+
+    def stats(self) -> Dict[str, Any]:
+        """Return capture/replay statistics for debugging."""
+        return {
+            "capture_count": self._capture_count,
+            "replay_count": self._replay_count,
+            "last_padded_batch": self._last_padded_batch,
+            "is_decoding": self.meta.is_decoding,
+        }
 
 
 __all__ = [
