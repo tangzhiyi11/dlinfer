@@ -202,9 +202,8 @@ class RunnerStats:
 class RunnerCache:
     """Simple helper to manage cached graph runners."""
 
-    def __init__(self, max_entries: Optional[int] = None) -> None:
+    def __init__(self) -> None:
         self._entries: "OrderedDict[Any, Tuple[Any, RunnerStats]]" = OrderedDict()
-        self._max_entries = max_entries
 
     def get_or_create(
         self, key: Any, factory: Callable[[], Any]
@@ -217,7 +216,6 @@ class RunnerCache:
             entry = (runner, stats)
             self._entries[key] = entry
             created = True
-            self._maybe_evict()
         else:
             self._entries.move_to_end(key)
         runner, stats = entry
@@ -241,21 +239,6 @@ class RunnerCache:
             snapshot[key] = entry
         return snapshot
 
-    def _maybe_evict(self) -> None:
-        if self._max_entries is None:
-            return
-        while len(self._entries) > self._max_entries:
-            evicted_key, (runner, stats) = self._entries.popitem(last=False)
-            logger.info(
-                "Evicting runner cache entry %s (captures=%s reuse=%s)",
-                evicted_key,
-                stats.capture_count,
-                stats.reuse_count,
-            )
-            if hasattr(runner, "session"):
-                session = getattr(runner, "session")
-                if hasattr(session, "stats"):
-                    logger.info("Evicted session stats: %s", session.stats())
 
 
 class AscendPiecewiseGraphRunner(GraphRunner):
@@ -275,16 +258,7 @@ class AscendPiecewiseGraphRunner(GraphRunner):
         self.num_blocks = cache_config.num_gpu_blocks
         self.enable_graph = self.check_enable_graph()
         self.graph_pool_handle = torch.cuda.graph_pool_handle()
-        max_runners_env = os.getenv("DLINFER_ASCEND_MAX_RUNNERS")
-        max_runners = None
-        if max_runners_env:
-            try:
-                max_runners = max(1, int(max_runners_env))
-            except ValueError:
-                logger.warning(
-                    "Invalid DLINFER_ASCEND_MAX_RUNNERS=%s, ignoring.", max_runners_env
-                )
-        self._runner_cache = RunnerCache(max_entries=max_runners)
+        self._runner_cache = RunnerCache()
         self._log_runner_stats = (
             os.getenv("DLINFER_ASCEND_LOG_RUNNER_STATS", "0") == "1"
         )
