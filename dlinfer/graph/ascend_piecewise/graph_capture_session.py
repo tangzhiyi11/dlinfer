@@ -22,7 +22,7 @@ from .piecewise_backend import create_backend, get_ascend_compatible_size
 
 logger = get_logger("dlinfer.ascend.capture")
 if os.environ.get("DLINFER_ASCEND_DEBUG_CAPTURE", "0") == "1":
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
 
 BuffType = Dict[str, Tensor]
 
