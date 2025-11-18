@@ -14,15 +14,9 @@ from contextlib import ExitStack
 from unittest.mock import patch
 from collections import OrderedDict
 from lmdeploy.utils import get_logger
+from dlinfer.graph.ascend_piecewise.utils import is_debug_enabled
 
 logger = get_logger("dlinfer.acl_graph")
-
-
-def is_debug_enabled() -> bool:
-    """Check if ACL graph debugging is enabled via environment variable."""
-    import os
-
-    return os.environ.get("DLINFER_ASCEND_PIECEWISE_GRAPH_DEBUG", "0") == "1"
 
 
 # Global counter for ACL graph capture statistics

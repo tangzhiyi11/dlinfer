@@ -23,6 +23,7 @@ from dlinfer.graph.ascend_piecewise.bucket_utils import limit_capture_bucket_lis
 from dlinfer.graph.ascend_piecewise.bucket_utils import adjust_capture_batch_sizes
 from lmdeploy.pytorch.model_inputs import StepContext, get_step_ctx_manager
 from dlinfer.graph.ascend_piecewise.graph_capture_session import GraphCaptureSession
+from dlinfer.graph.ascend_piecewise.utils import is_debug_enabled
 
 from torch.profiler import record_function
 
@@ -36,11 +37,6 @@ USE_CAPTURE_SESSION = not DISABLE_CAPTURE_SESSION
 _CAPTURE_SESSION_LOGGED = False
 
 
-def is_debug_enabled() -> bool:
-    """Check if ACL graph debugging is enabled via environment variable."""
-    import os
-
-    return os.environ.get("DLINFER_ASCEND_PIECEWISE_GRAPH_DEBUG", "0") == "1"
 def _false(*args, **kwargs):
     """Default value of not support cuda graph."""
     return False
