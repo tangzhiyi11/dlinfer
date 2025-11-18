@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -354,6 +355,75 @@ def update_context_cudagraph(graph_meta, context):
     context.kv_start_indices = input_buffers["kv_start_indices"]
 
 
+class SessionProfiler:
+    """Utility that tracks capture/replay timing and optional logging."""
+
+    def __init__(self) -> None:
+        self.enabled = os.environ.get("DLINFER_ASCEND_PROFILE", "0") == "1"
+        interval_env = os.environ.get("DLINFER_ASCEND_PROFILE_INTERVAL")
+        try:
+            self.interval = max(1, int(interval_env)) if interval_env else 100
+        except ValueError:
+            logger.warning(
+                "Invalid DLINFER_ASCEND_PROFILE_INTERVAL=%s, using default 100",
+                interval_env,
+            )
+            self.interval = 100
+
+        self.capture_count = 0
+        self.replay_count = 0
+        self.capture_time_total = 0.0
+        self.replay_time_total = 0.0
+        self.stage_totals: Dict[str, float] = defaultdict(float)
+
+    def stage_timer(self, name: str):
+        """Context manager that accumulates timing for an individual stage."""
+
+        class _StageCtx:
+            def __enter__(ctx_inner):
+                ctx_inner._start = time.perf_counter()
+
+            def __exit__(ctx_inner, exc_type, exc, tb):
+                elapsed = time.perf_counter() - ctx_inner._start
+                self.stage_totals[name] += elapsed
+
+        return _StageCtx()
+
+    def record_capture(self, elapsed: float, padded_batch: int) -> None:
+        """Record capture timing and optionally log."""
+        self.capture_count += 1
+        self.capture_time_total += elapsed
+        if self.enabled and self.capture_count % self.interval == 0:
+            logger.info(
+                "[CaptureProfile] count=%s padded_batch=%s total=%.3fms fill_ms=%.3f model_ms=%.3f",
+                self.capture_count,
+                padded_batch,
+                elapsed * 1000,
+                self._avg_stage("capture.fill_buffers", self.capture_count),
+                self._avg_stage("capture.compiled_model", self.capture_count),
+            )
+
+    def record_replay(self, elapsed: float, padded_batch: int) -> None:
+        """Record replay timing and optionally log."""
+        self.replay_count += 1
+        self.replay_time_total += elapsed
+        if self.enabled and self.replay_count % self.interval == 0:
+            logger.info(
+                "[ForwardProfile] reuse=%s padded_batch=%s total=%.3fms fill_ms=%.3f model_ms=%.3f",
+                self.replay_count,
+                padded_batch,
+                elapsed * 1000,
+                self._avg_stage("forward.fill_buffers", self.replay_count),
+                self._avg_stage("forward.compiled_model", self.replay_count),
+            )
+
+    def _avg_stage(self, name: str, denom: int) -> float:
+        if denom == 0:
+            return 0.0
+        total = self.stage_totals.get(name, 0.0)
+        return (total * 1000) / denom
+
+
 class GraphCaptureSession:
     """Encapsulates capture/replay buffers and compiled model."""
 
@@ -371,24 +441,9 @@ class GraphCaptureSession:
         self.model = model
         self.model_config = model_config
         self.ctx_mgr = model.ctx_mgr
-        self._capture_count = 0
-        self._replay_count = 0
         self._compile_miss_count = 0
         self._last_padded_batch: Optional[int] = None
-        self._profile_enabled = (
-            os.environ.get("DLINFER_ASCEND_PROFILE", "0") == "1"
-        )
-        interval_env = os.environ.get("DLINFER_ASCEND_PROFILE_INTERVAL")
-        try:
-            self._profile_interval = max(1, int(interval_env)) if interval_env else 100
-        except ValueError:
-            logger.warning(
-                "Invalid DLINFER_ASCEND_PROFILE_INTERVAL=%s, using default 100",
-                interval_env,
-            )
-            self._profile_interval = 100
-        self._capture_time_total = 0.0
-        self._replay_time_total = 0.0
+        self._profiler = SessionProfiler()
 
         self.meta = AscendPiecewiseGraphMeta(
             max_batchs=max_batches,
@@ -421,31 +476,22 @@ class GraphCaptureSession:
             self.meta, **kwargs
         )
 
-        padded_kwargs = fill_buffers_cudagraph(self.meta, **kwargs)
+        with self._profiler.stage_timer("capture.fill_buffers"):
+            padded_kwargs = fill_buffers_cudagraph(self.meta, **kwargs)
         context = self.ctx_mgr.current_context()
         update_context_cudagraph(self.meta, context)
         self._last_padded_batch = context.block_offsets.shape[0]
 
         compiled_model = self._compile_model()
-        run_start = time.perf_counter()
-        output = compiled_model(**padded_kwargs)
+        with self._profiler.stage_timer("capture.compiled_model"):
+            output = compiled_model(**padded_kwargs)
         logits_buffer = self.meta.output_buffers.get("logits")
         if logits_buffer is None or logits_buffer.shape != output.shape:
             logits_buffer = torch.empty_like(output, device=output.device)
             self.meta.output_buffers["logits"] = logits_buffer
         logits_buffer.copy_(output)
-        self._capture_count += 1
         elapsed = time.perf_counter() - t_start
-        self._capture_time_total += elapsed
-        if self._profile_enabled and (
-            self._capture_count % self._profile_interval == 0
-        ):
-            logger.info(
-                "[CaptureProfile] count=%s padded_batch=%s total=%.3fms",
-                self._capture_count,
-                self._last_padded_batch,
-                elapsed * 1000,
-            )
+        self._profiler.record_capture(elapsed, self._last_padded_batch or 0)
 
         return logits_buffer[:, :num_tokens]
 
@@ -460,7 +506,8 @@ class GraphCaptureSession:
 
         t_start = time.perf_counter()
         num_tokens = kwargs["input_ids"].size(-1)
-        new_inputs = fill_buffers_cudagraph(self.meta, **kwargs)
+        with self._profiler.stage_timer("forward.fill_buffers"):
+            new_inputs = fill_buffers_cudagraph(self.meta, **kwargs)
         context = self.ctx_mgr.current_context()
         update_context_cudagraph(self.meta, context)
         padded_batch = context.block_offsets.shape[0]
@@ -476,21 +523,14 @@ class GraphCaptureSession:
                 self.meta.is_decoding,
             )
             self._last_padded_batch = padded_batch
-        compiled_out = self._compiled_model(**new_inputs)
+        with self._profiler.stage_timer("forward.compiled_model"):
+            compiled_out = self._compiled_model(**new_inputs)
 
         logits_buffer = self.meta.output_buffers["logits"]
         if compiled_out.data_ptr() != logits_buffer.data_ptr():
             logits_buffer.copy_(compiled_out)
-        self._replay_count += 1
         elapsed = time.perf_counter() - t_start
-        self._replay_time_total += elapsed
-        if self._profile_enabled and (self._replay_count % self._profile_interval == 0):
-            logger.info(
-                "[ForwardProfile] reuse=%s padded_batch=%s total=%.3fms",
-                self._replay_count,
-                padded_batch,
-                elapsed * 1000,
-            )
+        self._profiler.record_replay(elapsed, padded_batch)
         return logits_buffer[:, :num_tokens]
 
     def _ensure_backend(self) -> None:
@@ -530,13 +570,16 @@ class GraphCaptureSession:
     def stats(self) -> Dict[str, Any]:
         """Return capture/replay statistics for debugging."""
         return {
-            "capture_count": self._capture_count,
-            "replay_count": self._replay_count,
+            "capture_count": self._profiler.capture_count,
+            "replay_count": self._profiler.replay_count,
             "compile_miss_count": self._compile_miss_count,
             "last_padded_batch": self._last_padded_batch,
             "is_decoding": self.meta.is_decoding,
-            "capture_time_total_ms": self._capture_time_total * 1000,
-            "replay_time_total_ms": self._replay_time_total * 1000,
+            "capture_time_total_ms": self._profiler.capture_time_total * 1000,
+            "replay_time_total_ms": self._profiler.replay_time_total * 1000,
+            "stage_totals_ms": {
+                name: total * 1000 for name, total in self._profiler.stage_totals.items()
+            },
         }
 
 
