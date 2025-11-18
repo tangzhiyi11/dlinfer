@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -373,6 +375,20 @@ class GraphCaptureSession:
         self._replay_count = 0
         self._compile_miss_count = 0
         self._last_padded_batch: Optional[int] = None
+        self._profile_enabled = (
+            os.environ.get("DLINFER_ASCEND_PROFILE", "0") == "1"
+        )
+        interval_env = os.environ.get("DLINFER_ASCEND_PROFILE_INTERVAL")
+        try:
+            self._profile_interval = max(1, int(interval_env)) if interval_env else 100
+        except ValueError:
+            logger.warning(
+                "Invalid DLINFER_ASCEND_PROFILE_INTERVAL=%s, using default 100",
+                interval_env,
+            )
+            self._profile_interval = 100
+        self._capture_time_total = 0.0
+        self._replay_time_total = 0.0
 
         self.meta = AscendPiecewiseGraphMeta(
             max_batchs=max_batches,
@@ -398,6 +414,7 @@ class GraphCaptureSession:
         if is_debug_enabled():
             logger.info("Capturing graph with meta: %s", self.meta)
 
+        t_start = time.perf_counter()
         num_tokens = kwargs["input_ids"].size(-1)
         self._ensure_backend()
         self.meta.input_buffers, self.meta.output_buffers = make_buffers_cudagraph(
@@ -410,6 +427,7 @@ class GraphCaptureSession:
         self._last_padded_batch = context.block_offsets.shape[0]
 
         compiled_model = self._compile_model()
+        run_start = time.perf_counter()
         output = compiled_model(**padded_kwargs)
         logits_buffer = self.meta.output_buffers.get("logits")
         if logits_buffer is None or logits_buffer.shape != output.shape:
@@ -417,6 +435,17 @@ class GraphCaptureSession:
             self.meta.output_buffers["logits"] = logits_buffer
         logits_buffer.copy_(output)
         self._capture_count += 1
+        elapsed = time.perf_counter() - t_start
+        self._capture_time_total += elapsed
+        if self._profile_enabled and (
+            self._capture_count % self._profile_interval == 0
+        ):
+            logger.info(
+                "[CaptureProfile] count=%s padded_batch=%s total=%.3fms",
+                self._capture_count,
+                self._last_padded_batch,
+                elapsed * 1000,
+            )
 
         return logits_buffer[:, :num_tokens]
 
@@ -429,6 +458,7 @@ class GraphCaptureSession:
         if self._compiled_model is None:
             return self.capture(**kwargs)
 
+        t_start = time.perf_counter()
         num_tokens = kwargs["input_ids"].size(-1)
         new_inputs = fill_buffers_cudagraph(self.meta, **kwargs)
         context = self.ctx_mgr.current_context()
@@ -452,6 +482,17 @@ class GraphCaptureSession:
         if compiled_out.data_ptr() != logits_buffer.data_ptr():
             logits_buffer.copy_(compiled_out)
         self._replay_count += 1
+        elapsed = time.perf_counter() - t_start
+        self._replay_time_total += elapsed
+        if self._profile_enabled and (
+            self._replay_count % self._profile_interval == 0
+        ):
+            logger.info(
+                "[ForwardProfile] reuse=%s padded_batch=%s total=%.3fms",
+                self._replay_count,
+                padded_batch,
+                elapsed * 1000,
+            )
         return logits_buffer[:, :num_tokens]
 
     def _ensure_backend(self) -> None:
@@ -496,6 +537,8 @@ class GraphCaptureSession:
             "compile_miss_count": self._compile_miss_count,
             "last_padded_batch": self._last_padded_batch,
             "is_decoding": self.meta.is_decoding,
+            "capture_time_total_ms": self._capture_time_total * 1000,
+            "replay_time_total_ms": self._replay_time_total * 1000,
         }
 
 
