@@ -20,6 +20,7 @@ from dlinfer.graph.ascend_piecewise.piecewise_backend import (
     get_capture_batch_sizes as backend_capture_batch_sizes,
 )
 from dlinfer.graph.ascend_piecewise.bucket_utils import limit_capture_bucket_list
+from dlinfer.graph.ascend_piecewise.bucket_utils import adjust_capture_batch_sizes
 from lmdeploy.pytorch.model_inputs import StepContext, get_step_ctx_manager
 from dlinfer.graph.ascend_piecewise.graph_capture_session import GraphCaptureSession
 
