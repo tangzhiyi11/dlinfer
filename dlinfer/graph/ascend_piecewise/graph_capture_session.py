@@ -62,6 +62,15 @@ class AscendPiecewiseAttentionBuffer:
         return cls.class_attention_output[:batch_size]
 
 
+def _as_tensor_on_device(value: Any, dtype: torch.dtype, device: torch.device) -> Tensor:
+    """Convert value to tensor on the desired device/dtype without reallocating."""
+    if torch.is_tensor(value):
+        if value.dtype != dtype or value.device != device:
+            return value.to(device=device, dtype=dtype)
+        return value
+    return torch.as_tensor(value, dtype=dtype, device=device)
+
+
 def make_buffers_cudagraph(graph_meta: CudaGraphMeta, *args, **kwargs) -> BuffType:
     max_batches = graph_meta.max_batchs
     max_tokens = graph_meta.max_tokens
@@ -236,17 +245,20 @@ def fill_buffers_cudagraph(
     input_buffers["block_offsets"].zero_()
     input_buffers["block_offsets"][:batch_size, :num_blocks] = block_offsets
 
-    kv_seqlens_tensor = torch.as_tensor(
+    kv_seqlens_buffer = input_buffers["kv_seqlens"]
+    kv_seqlens_tensor = _as_tensor_on_device(
         kv_seqlens,
-        dtype=torch.int32,
+        dtype=kv_seqlens_buffer.dtype,
+        device=kv_seqlens_buffer.device,
     )
     input_buffers["kv_seqlens"].zero_()
     input_buffers["kv_seqlens"][:batch_size] = kv_seqlens_tensor
 
-    kv_start_indices_tensor = torch.as_tensor(
+    kv_start_buffer = input_buffers["kv_start_indices"]
+    kv_start_indices_tensor = _as_tensor_on_device(
         kv_start_indices,
-        dtype=input_buffers["kv_start_indices"].dtype,
-        device=input_buffers["kv_start_indices"].device,
+        dtype=kv_start_buffer.dtype,
+        device=kv_start_buffer.device,
     )
     input_buffers["kv_start_indices"].zero_()
     input_buffers["kv_start_indices"][:batch_size] = kv_start_indices_tensor
