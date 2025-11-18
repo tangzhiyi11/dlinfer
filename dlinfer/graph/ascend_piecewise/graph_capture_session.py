@@ -508,7 +508,7 @@ class GraphCaptureSession:
                 input_ids = padded_kwargs.get("input_ids")
                 attn_metadata = padded_kwargs.get("attn_metadata")
                 meta = getattr(attn_metadata, "kv_seqlens", None)
-                logger.debug(
+                logger.info(
                     "[CaptureDebug] padded input_ids=%s kv_seqlens=%s q_seqlens=%s",
                     tuple(input_ids.shape) if input_ids is not None else None,
                     tuple(meta.shape) if meta is not None else None,
