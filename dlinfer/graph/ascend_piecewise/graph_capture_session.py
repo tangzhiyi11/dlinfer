@@ -238,12 +238,25 @@ def fill_buffers_cudagraph(
     batch_size, num_blocks = block_offsets.size()
     num_tokens = input_ids.size(-1)
 
-    input_buffers["input_ids"].zero_()
-    input_buffers["input_ids"][:, :num_tokens] = input_ids
-    input_buffers["position_ids"].zero_()
-    input_buffers["position_ids"][:, :num_tokens] = position_ids
-    input_buffers["block_offsets"].zero_()
-    input_buffers["block_offsets"][:batch_size, :num_blocks] = block_offsets
+    if graph_meta.is_decoding:
+        padded_batch_size = max(graph_meta.max_batchs, batch_size)
+    else:
+        padded_batch_size = get_ascend_compatible_size(batch_size)
+
+    input_ids_buf = input_buffers["input_ids"]
+    input_ids_buf[:, :num_tokens].copy_(input_ids)
+    if num_tokens < padded_batch_size:
+        input_ids_buf[:, num_tokens:padded_batch_size].zero_()
+
+    position_ids_buf = input_buffers["position_ids"]
+    position_ids_buf[:, :num_tokens].copy_(position_ids)
+    if num_tokens < padded_batch_size:
+        position_ids_buf[:, num_tokens:padded_batch_size].zero_()
+
+    block_offsets_buf = input_buffers["block_offsets"]
+    block_offsets_buf[:batch_size, :num_blocks].copy_(block_offsets)
+    if batch_size < padded_batch_size:
+        block_offsets_buf[batch_size:padded_batch_size, :num_blocks].zero_()
 
     kv_seqlens_buffer = input_buffers["kv_seqlens"]
     kv_seqlens_tensor = _as_tensor_on_device(
@@ -251,8 +264,9 @@ def fill_buffers_cudagraph(
         dtype=kv_seqlens_buffer.dtype,
         device=kv_seqlens_buffer.device,
     )
-    input_buffers["kv_seqlens"].zero_()
-    input_buffers["kv_seqlens"][:batch_size] = kv_seqlens_tensor
+    kv_seqlens_buffer[:batch_size].copy_(kv_seqlens_tensor)
+    if batch_size < padded_batch_size:
+        kv_seqlens_buffer[batch_size:padded_batch_size].zero_()
 
     kv_start_buffer = input_buffers["kv_start_indices"]
     kv_start_indices_tensor = _as_tensor_on_device(
@@ -260,8 +274,9 @@ def fill_buffers_cudagraph(
         dtype=kv_start_buffer.dtype,
         device=kv_start_buffer.device,
     )
-    input_buffers["kv_start_indices"].zero_()
-    input_buffers["kv_start_indices"][:batch_size] = kv_start_indices_tensor
+    kv_start_buffer[:batch_size].copy_(kv_start_indices_tensor)
+    if batch_size < padded_batch_size:
+        kv_start_buffer[batch_size:padded_batch_size].zero_()
 
     if inputs_embeds is not None:
         emb_size = inputs_embeds.size(-1)
@@ -270,14 +285,10 @@ def fill_buffers_cudagraph(
             input_buffers["inputs_embeds"] = inputs_embeds.new_zeros(
                 1, max_num_tokens, emb_size
             )
-        else:
-            input_buffers["inputs_embeds"].zero_()
-        input_buffers["inputs_embeds"][:, :num_tokens] = inputs_embeds
-
-    if graph_meta.is_decoding:
-        padded_batch_size = max(graph_meta.max_batchs, batch_size)
-    else:
-        padded_batch_size = get_ascend_compatible_size(batch_size)
+        inputs_embed_buf = input_buffers["inputs_embeds"]
+        inputs_embed_buf[:, :num_tokens].copy_(inputs_embeds)
+        if num_tokens < padded_batch_size:
+            inputs_embed_buf[:, num_tokens:padded_batch_size].zero_()
 
     attn_metadata.block_offsets = input_buffers["block_offsets"][:padded_batch_size]
     attn_metadata.kv_seqlens = input_buffers["kv_seqlens"][:padded_batch_size]
