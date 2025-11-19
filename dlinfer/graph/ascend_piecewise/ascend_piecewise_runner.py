@@ -506,7 +506,7 @@ class AscendPiecewiseGraphRunner(GraphRunner):
             padding_batch_size = meta.padding_batch_size
             tp_size = self._get_capture_tokens(padding_batch_size)
             # Sync both tp_sizes and moe_tp_sizes so downstream MoE ops see the padded token count.
-            logger.info(
+            logger.debug(
                 "[AscendRunner] sync_tp_size padding_batch_size=%s tp_size=%s "
                 "tp_sizes_before=%s moe_tp_sizes_before=%s",
                 padding_batch_size,
@@ -515,7 +515,7 @@ class AscendPiecewiseGraphRunner(GraphRunner):
                 dp_meta.moe_tp_sizes,
             )
             dp_meta.sync_tp_size(tp_size)
-            logger.info(
+            logger.debug(
                 "[AscendRunner] synced tp_sizes_after=%s moe_tp_sizes_after=%s",
                 dp_meta.tp_sizes,
                 dp_meta.moe_tp_sizes,
