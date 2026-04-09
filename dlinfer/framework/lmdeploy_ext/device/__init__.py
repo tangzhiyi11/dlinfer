@@ -460,6 +460,8 @@ def patch_qwen3_5():
     @classmethod
     def custom_build(cls, hf_config, model_path: str = None, tp: int = 1, **kwargs):
         """build."""
+        is_draft_model = kwargs.get("is_draft_model", False)
+        spec_method = kwargs.get("spec_method", None)
         text_config = hf_config.text_config
         # propagate quantization_config from top-level hf_config into text_config
         quantization_config = getattr(hf_config, "quantization_config", None)
@@ -468,6 +470,9 @@ def patch_qwen3_5():
         ):
             text_config.quantization_config = quantization_config
         cfg = DefaultModelConfigBuilder.build(text_config, model_path, tp=tp, **kwargs)
+
+        if getattr(hf_config.text_config, "attn_output_gate", False):
+            cfg.num_attention_heads *= 2
 
         # update num layers
         num_layers = cfg.num_layers
@@ -508,6 +513,21 @@ def patch_qwen3_5():
         cfg.check_env_func = _check_env_qwen3_next
 
         cfg.use_mrope = True
+
+        # keep upstream speculative-decoding behavior while preserving the
+        # Ascend-specific state-cache layout above.
+        if spec_method is not None:
+            assert spec_method == "qwen3_5_mtp"
+            cfg.model_paradigm = "ar_spec"
+
+        if is_draft_model:
+            hf_config.architectures = ["Qwen3_5MTPModel"]
+            if getattr(hf_config, "auto_map", None):
+                hf_config.auto_map = {}
+            cfg.model_paradigm = "ar_spec"
+            cfg.num_layers = text_config.mtp_num_hidden_layers
+            cfg.states_shapes = []
+
         return cfg
 
     def custom_prepare_inputs_for_generation(
@@ -526,13 +546,21 @@ def patch_qwen3_5():
         # make past_key_values
         # state_caches holds num_delta_layers conv entries then num_delta_layers recurrent
         # entries, each already shaped (num_caches, ...) and contiguous.
-        n = len(context.state_caches) // 2
-        state_caches = list(zip(context.state_caches[:n], context.state_caches[n:]))
+        raw_state_caches = context.state_caches or []
+        n = len(raw_state_caches) // 2
+        state_caches = list(zip(raw_state_caches[:n], raw_state_caches[n:]))
 
         past_key_values = list(past_key_values)
         new_past_key_values = []
         for layer_type in self.config.text_config.layer_types:
             if layer_type == "linear_attention":
+                if len(state_caches) == 0:
+                    raise RuntimeError(
+                        "Qwen3.5 linear-attention layers require state_caches, "
+                        "but got none in prepare_inputs_for_generation. "
+                        "This usually means the draft/spec model was built with "
+                        "the wrong model class or cache config."
+                    )
                 new_past_key_values.append(state_caches.pop(0))
             elif layer_type == "full_attention":
                 new_past_key_values.append(past_key_values.pop(0))

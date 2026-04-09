@@ -427,19 +427,43 @@ class AscendGraphRunner(GraphRunner):
     def get_graph_key(
         self,
         input_ids: torch.Tensor,
+        attn_metadata: Any,
         **kwargs,
     ):
         """Get graph key."""
         context = self.ctx_mgr.current_context()
         is_decoding = context.is_decoding
-        num_tokens = input_ids.numel()
         meta = self.get_meta()
         enable_microbatch = get_step_ctx_manager().current_context().enable_microbatch
+
+        if is_decoding:
+            batch_size = None
+            q_seqlens = None
+            if attn_metadata is not None:
+                q_seqlens = getattr(attn_metadata, "q_seqlens", None)
+            if q_seqlens is None:
+                q_seqlens = getattr(context, "q_seqlens", None)
+            if q_seqlens is not None:
+                batch_size = q_seqlens.size(0)
+            elif kwargs.get("state_ids", None) is not None:
+                batch_size = kwargs["state_ids"].size(0)
+
+            if batch_size is not None and batch_size > 0 and input_ids.size(-1) % batch_size == 0:
+                query_len = input_ids.size(-1) // batch_size
+                if meta.padding_batch_size is None:
+                    new_batch_size = self._get_capture_tokens(batch_size)
+                else:
+                    padding_num_tokens = meta.padding_batch_size
+                    padding_batch_size = (padding_num_tokens + query_len - 1) // query_len
+                    new_batch_size = self._get_capture_tokens(padding_batch_size)
+                return (new_batch_size, is_decoding, enable_microbatch, query_len)
+
+        num_tokens = input_ids.numel()
         if meta.padding_batch_size is None:
             new_num_tokens = self._get_capture_tokens(num_tokens)
         else:
             new_num_tokens = self._get_capture_tokens(meta.padding_batch_size)
-        return (new_num_tokens, is_decoding, enable_microbatch)
+        return (new_num_tokens, is_decoding, enable_microbatch, 1)
 
     def __call__(self, **kwargs):
         """call."""
@@ -451,10 +475,15 @@ class AscendGraphRunner(GraphRunner):
                 return self.model.make_output_buffers(ret)
 
         graph_key = self.get_graph_key(**kwargs)
-        max_tokens = graph_key[0]
+        max_batches = graph_key[0]
         is_decoding = graph_key[1]
+        decode_query_len = graph_key[3]
+        if is_decoding:
+            max_tokens = max_batches * decode_query_len
+        else:
+            max_tokens = max_batches
+            max_batches = self.max_batches
         if graph_key not in self._runner_map:
-            max_batches = max_tokens if is_decoding else self.max_batches
             runner = AscendSingleGraphRunner(
                 self.model,
                 max_batches=max_batches,

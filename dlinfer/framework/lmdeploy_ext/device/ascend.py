@@ -1,5 +1,6 @@
 # Copyright (c) 2024, DeepLink. All rights reserved.
 import functools
+import inspect
 import math
 import os
 import torch
@@ -83,13 +84,29 @@ def _patched_create_model_inputs_delta(self):
         batch_size = len(self.running_seqs)
         assert batch_size > 0
         num_decode_tokens = self.engine_strategy.get_num_decode_tokens()
+        get_num_required_tokens = getattr(
+            self.engine_strategy, "get_num_required_tokens", None
+        )
+        num_required_tokens = (
+            get_num_required_tokens()
+            if get_num_required_tokens is not None
+            else num_decode_tokens
+        )
         max_q_seqlen = num_decode_tokens
         prealloc_size = self.engine_strategy.get_prealloc_size(True)
-        valid_mask = self.scheduler.schedule_running(
-            self.running_seqs,
-            num_decode_tokens=num_decode_tokens,
-            prealloc_size=prealloc_size,
-        )
+        schedule_running_sig = inspect.signature(self.scheduler.schedule_running)
+        if "num_required_tokens" in schedule_running_sig.parameters:
+            valid_mask = self.scheduler.schedule_running(
+                self.running_seqs,
+                num_required_tokens=num_required_tokens,
+                prealloc_size=prealloc_size,
+            )
+        else:
+            valid_mask = self.scheduler.schedule_running(
+                self.running_seqs,
+                num_decode_tokens=num_decode_tokens,
+                prealloc_size=prealloc_size,
+            )
 
         valid_mask = np.array(valid_mask)
         indices_cpu = np.arange(0, batch_size)[valid_mask]

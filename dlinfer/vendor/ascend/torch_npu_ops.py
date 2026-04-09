@@ -475,6 +475,41 @@ def paged_prefill_attention(
         )
 
     scale_value = softmax_scale if softmax_scale else 1.0 / math.sqrt(query.shape[-1])
+    q_seq_len_cpu = get_cpu_seq_len(q_seq_len)
+    if q_seq_len_cpu.numel() > 0 and int(q_seq_len_cpu.max().item()) > 1:
+        # Spec decode can write multiple new tokens per sequence while still
+        # reusing the paged KV cache. Model the attention as token-wise decode
+        # with incremental context lengths so earlier speculative tokens do not
+        # attend to later ones from the same step.
+        if kv_seq_len.numel() == q_seq_len_cpu.numel():
+            kv_seq_len_per_seq = kv_seq_len
+        else:
+            seq_starts = torch.cumsum(q_seq_len_cpu, dim=0) - q_seq_len_cpu
+            kv_seq_len_per_seq = kv_seq_len.index_select(0, seq_starts)
+
+        history_lens = kv_seq_len_per_seq - q_seq_len_cpu
+        kv_seq_len = torch.cat([
+            torch.arange(
+                int(history_len.item()) + 1,
+                int(final_len.item()) + 1,
+                dtype=kv_seq_len_per_seq.dtype,
+            )
+            for history_len, final_len in zip(history_lens, kv_seq_len_per_seq)
+        ])
+        return decode_attention(
+            query=query.contiguous(),
+            key_cache=key_cache,
+            value_cache=value_cache,
+            num_kv_heads=num_kv_heads,
+            num_q_heads=num_q_heads,
+            scale_value=scale_value,
+            block_table=block_table,
+            block_size=block_size,
+            kv_seq_len=kv_seq_len,
+            softmax_scale=softmax_scale,
+            attn_output=attn_output,
+        )
+
     query = query.contiguous().view(query.shape[0], 1, -1)
     block_num = key_cache.size(0)
     key_cache = key_cache.view(block_num, block_size, -1)
