@@ -527,6 +527,11 @@ def patch_qwen3_5():
             cfg.model_paradigm = "ar_spec"
             cfg.num_layers = text_config.mtp_num_hidden_layers
             cfg.states_shapes = []
+            # Undo KV head replication so cache engine (world_size=1) allocates
+            # the original head count, matching the draft attention dimensions.
+            num_replicate = getattr(text_config, 'num_replicate_key_value_heads', 1)
+            if num_replicate > 1:
+                cfg.num_key_value_heads = cfg.num_key_value_heads // num_replicate
 
         return cfg
 
