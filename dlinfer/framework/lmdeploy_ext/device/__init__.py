@@ -265,6 +265,7 @@ def patch_gated_delta_net():
         ):
             self.is_decoding = attn_metadata.is_decoding
             self.cu_seqlens = attn_metadata.q_start_loc
+            self.is_multi_token_decoding = getattr(attn_metadata, 'is_multi_token_decoding', False)
 
             # state_ids, fill invalid state with 0
             self.state_ids = state_ids.clamp(0)
@@ -383,8 +384,12 @@ def patch_gated_delta_net():
             """call."""
 
             is_decoding = gated_delta_meta.is_decoding
+            is_multi_token_decode = (
+                not is_decoding
+                and getattr(gated_delta_meta, 'is_multi_token_decoding', False)
+            )
 
-            if is_decoding:
+            if is_decoding or is_multi_token_decode:
                 indices = gated_delta_meta.state_ids
                 cu_seqlens = gated_delta_meta.cu_seqlens
                 core_attn_out = self.fused_sigmoid_gating_delta_rule_update(
