@@ -4,6 +4,9 @@ import torch
 from functools import lru_cache
 from dlinfer.vendor import vendor_name
 
+# Global per-substep timing for GatedDelta layers (enabled by LMDEPLOY_GDN_TIMING=1)
+_gdn_timing = {'proj': [], 'conv1d': [], 'attn': [], 'norm': [], 'out': []}
+
 vendor = ["camb", "ascend"]
 
 
@@ -350,8 +353,33 @@ def patch_gated_delta_net():
             weight_reshaped = weight.squeeze(1)
             x = x.squeeze(0)
 
-            if gated_delta_meta.is_decoding:
+            is_multi_token_decode = (
+                not gated_delta_meta.is_decoding
+                and getattr(gated_delta_meta, 'is_multi_token_decoding', False)
+            )
+            if gated_delta_meta.is_decoding or is_multi_token_decode:
                 conv_state_indices = gated_delta_meta.conv_state_indices
+                # causal_conv1d_update_npu supports multi-token via
+                # seqlen > 1 in the Triton kernel's for-loop.
+                # For multi-token, x shape is (batch * seqlen, dim);
+                # reshape to (batch, seqlen, dim) for the update kernel.
+                if is_multi_token_decode:
+                    cu = gated_delta_meta.cu_seqlens
+                    num_seqs = cu.size(0) - 1
+                    seqlen = x.size(0) // num_seqs
+                    if seqlen > 1:
+                        x = x.view(num_seqs, seqlen, -1).contiguous()
+                        out = self.causal_conv1d_update(
+                            x,
+                            conv_state,
+                            weight_reshaped.view(4, -1),
+                            bias,
+                            self.activation,
+                            conv_state_indices=conv_state_indices,
+                            validate_data=False,
+                        )
+                        out = out.reshape(-1, out.size(-1)).unsqueeze(0)
+                        return out, conv_state
                 return self.conv1d_update(
                     x, weight_reshaped, bias, conv_state, conv_state_indices
                 )
@@ -649,10 +677,14 @@ def patch_qwen3_5():
         gated_delta_meta: GatedDeltaMeta,
     ):
         """forward."""
+        import os as _os
+        _enable = _os.environ.get('LMDEPLOY_GDN_TIMING', '0') == '1'
 
         # load states
         conv_state, recurrent_state = self._load_state(past_key_value, gated_delta_meta)
 
+        if _enable:
+            import time as _t; _t0 = _t.perf_counter()
         # inputs proj
         projected_states_qkv = self.in_proj_qkv(hidden_states)
         z = self.in_proj_z(hidden_states)
@@ -660,11 +692,17 @@ def patch_qwen3_5():
         z = z.unflatten(-1, (-1, self.head_v_dim))
         projected_states_ba = self.in_proj_ba(hidden_states)
         b, a = self.fix_ba_ordering(projected_states_ba)
+        if _enable:
+            _gdn_timing['proj'].append((_t.perf_counter() - _t0) * 1000)
 
+        if _enable:
+            _t0 = _t.perf_counter()
         mixed_qkv = projected_states_qkv
         mixed_qkv, conv_state = self.conv1d(
             mixed_qkv, conv_state, gated_delta_meta=gated_delta_meta
         )
+        if _enable:
+            _gdn_timing['conv1d'].append((_t.perf_counter() - _t0) * 1000)
 
         tp = (self.key_dim * 2 + self.value_dim) // mixed_qkv.size(-1)
         query, key, value = torch.split(
@@ -687,6 +725,8 @@ def patch_qwen3_5():
             query = query.repeat_interleave(self.kv_ratio, dim=-2)
             key = key.repeat_interleave(self.kv_ratio, dim=-2)
 
+        if _enable:
+            _t0 = _t.perf_counter()
         core_attn_out, recurrent_state = self.gated_delta(
             query,
             key,
@@ -698,7 +738,11 @@ def patch_qwen3_5():
             recurrent_state=recurrent_state,
             gated_delta_meta=gated_delta_meta,
         )
+        if _enable:
+            _gdn_timing['attn'].append((_t.perf_counter() - _t0) * 1000)
 
+        if _enable:
+            _t0 = _t.perf_counter()
         z_shape_og = z.shape
         core_attn_out = core_attn_out.reshape(-1, core_attn_out.shape[-1])
         z = z.reshape(-1, z.shape[-1])
@@ -707,8 +751,15 @@ def patch_qwen3_5():
         core_attn_out = core_attn_out.reshape(
             core_attn_out.shape[0], core_attn_out.shape[1], -1
         )
+        if _enable:
+            _gdn_timing['norm'].append((_t.perf_counter() - _t0) * 1000)
 
+        if _enable:
+            _t0 = _t.perf_counter()
         output = self.out_proj(core_attn_out)
+        if _enable:
+            _gdn_timing['out'].append((_t.perf_counter() - _t0) * 1000)
+
         return output
 
     def custom_weight_loader(
