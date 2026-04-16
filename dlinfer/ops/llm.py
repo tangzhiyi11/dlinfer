@@ -22,6 +22,7 @@ __all__ = [
     "fill_kv_cache",
     "paged_decode_attention",
     "paged_prefill_attention",
+    "multi_token_decode_attention",
     "rms_norm",
     "silu_and_mul",
     "moe_gating_topk_softmax",
@@ -245,6 +246,58 @@ def fill_kv_cache(
         kv_indices,
         k_scales_zeros,
         v_scales_zeros,
+        quant_bits,
+    )
+
+
+@register_custom_op(
+    "dlinfer::multi_token_decode_attention",
+    ["attn_output"],
+    default_value={
+        "softmax_scale": None,
+        "alibi_slopes": None,
+        "attn_output": None,
+        "actual_seq_lengths_q": None,
+        "kv_scales": None,
+        "kv_zeros": None,
+        "quant_bits": 0,
+    },
+)
+def multi_token_decode_attention(
+    query: Tensor,
+    key_cache: Tensor,
+    value_cache: Tensor,
+    block_table: Tensor,
+    block_size: int,
+    kv_seq_len: Tensor,
+    max_kv_seq_len: int,
+    num_q_heads: int,
+    num_kv_heads: int,
+    softmax_scale: Optional[float],
+    alibi_slopes: Optional[Sequence[float]],
+    attn_output: Optional[Tensor],
+    actual_seq_lengths_q: Optional[Tensor],
+    kv_scales: Optional[Tensor],
+    kv_zeros: Optional[Tensor],
+    quant_bits: Optional[int],
+) -> Tensor:
+    """Multi-token decode attention using single npu_fused_infer_attention_score call."""
+    return vendor_ops_registry["multi_token_decode_attention"](
+        query,
+        key_cache,
+        value_cache,
+        block_table,
+        block_size,
+        kv_seq_len,
+        max_kv_seq_len,
+        num_q_heads,
+        num_kv_heads,
+        softmax_scale,
+        alibi_slopes,
+        attn_output,
+        actual_seq_lengths_q,
+        kv_scales,
+        kv_zeros,
         quant_bits,
     )
 

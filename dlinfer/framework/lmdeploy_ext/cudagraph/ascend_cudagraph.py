@@ -81,6 +81,11 @@ def AscendCudaGraphMixin_make_buffers_cudagraph(
         (max_batches), dtype=torch.bool, device=device
     )
 
+    # actual_seq_lengths_q for multi-token decode (CPU tensor, cumulative)
+    input_buffers["actual_seq_lengths_q"] = torch.zeros(
+        max_batches, dtype=torch.int32
+    )
+
     # ssm
     if graph_meta.is_ssm:
         input_buffers["state_ids"] = torch.full(
@@ -141,6 +146,13 @@ def AscendCudaGraphMixin_fill_buffers_cudagraph(
     if x_active_mask is not None:
         input_buffers["x_active_mask"].fill_(0)
         input_buffers["x_active_mask"][:x_active_mask.size(0)] = x_active_mask
+
+    # multi-token decode: fill actual_seq_lengths_q
+    actual_seq_lengths_q = getattr(attn_metadata, 'actual_seq_lengths_q', None)
+    if actual_seq_lengths_q is not None:
+        input_buffers["actual_seq_lengths_q"].zero_()
+        input_buffers["actual_seq_lengths_q"][:actual_seq_lengths_q.size(0)] = actual_seq_lengths_q
+        attn_metadata.actual_seq_lengths_q = input_buffers["actual_seq_lengths_q"]
 
     # ssm
     if graph_meta.is_ssm:
@@ -362,10 +374,15 @@ class AscendSingleGraphRunner:
         self.model.update_context_cudagraph(self.meta, context)
         if aclgraph_use_torch_npu_update():
             self._graph.replay()
+            update_dict = {
+                "actual_seq_lengths_kv": self.meta.input_buffers["kv_seqlens"],
+            }
+            # multi-token decode also needs actual_seq_lengths updated
+            actual_seq_lengths_q = self.meta.input_buffers.get("actual_seq_lengths_q")
+            if actual_seq_lengths_q is not None and actual_seq_lengths_q.any():
+                update_dict["actual_seq_lengths"] = actual_seq_lengths_q
             self._graph.update(
-                cpu_update_input=[
-                    {"actual_seq_lengths_kv": self.meta.input_buffers["kv_seqlens"]}
-                ]
+                cpu_update_input=[update_dict]
             )
         else:
             update_attn_params(self.update_stream, self.meta, self.max_tokens)

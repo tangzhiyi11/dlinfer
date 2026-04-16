@@ -27,6 +27,7 @@ __all__ = [
     "fill_kv_cache",
     "paged_decode_attention",
     "paged_prefill_attention",
+    "multi_token_decode_attention",
     "rms_norm",
     "moe_gating_topk_softmax",
     "get_cache_len",
@@ -385,6 +386,110 @@ def fill_contiguous_kvcache(
 @register_ops(vendor_ops_registry)
 def get_cache_len(cache: Tensor):
     return cache.shape[1]
+
+
+@register_ops(vendor_ops_registry)
+def multi_token_decode_attention(
+    query: Tensor,
+    key_cache: Tensor,
+    value_cache: Tensor,
+    block_table: Optional[Tensor],
+    block_size: int,
+    kv_seq_len: Tensor,
+    max_kv_seq_len: int,
+    num_q_heads: int,
+    num_kv_heads: int,
+    softmax_scale: Optional[float],
+    alibi_slopes: Optional[Sequence[float]],
+    attn_output: Optional[Tensor],
+    actual_seq_lengths_q: Optional[Tensor],
+    kv_scales: Optional[Tensor],
+    kv_zeros: Optional[Tensor],
+    quant_bits: Optional[int],
+) -> Tensor:
+    """Single npu_fused_infer_attention_score call for multi-token decode.
+
+    Uses per-sequence block_table (NOT expanded per-token) with
+    actual_seq_lengths_q to let the kernel know how many query tokens
+    belong to each sequence.  sparse_mode=3 (causal) ensures earlier
+    speculative tokens do not attend to later ones from the same step.
+    """
+    from dlinfer.framework.lmdeploy_ext.cudagraph.ascend_cudagraph import (
+        AscendGraphRunner,
+        aclgraph_use_torch_npu_update,
+    )
+
+    if alibi_slopes is not None:
+        raise RuntimeError(
+            "multi_token_decode_attention does not support alibi_slopes yet"
+        )
+    if isinstance(block_table, torch.Tensor) and block_table.dtype != torch.int32:
+        block_table = block_table.to(torch.int32)
+
+    query = query.contiguous()
+    attn_output = attn_output.contiguous()
+    scale_value = softmax_scale if softmax_scale else 1.0 / math.sqrt(query.shape[-1])
+
+    # Older graph capture mechanism requires _npu_paged_attention per-token.
+    # Fall back to token-wise decode for compatibility.
+    if AscendGraphRunner.capturing and not aclgraph_use_torch_npu_update():
+        # Recover per-seq q_seqlens from cumulative actual_seq_lengths_q
+        prepend = torch.zeros(1, dtype=actual_seq_lengths_q.dtype)
+        q_seqlens_cpu = torch.diff(actual_seq_lengths_q, prepend=prepend)
+        # Expand block_table per-token
+        block_table_expanded = block_table.repeat_interleave(q_seqlens_cpu, 0)
+        # Compute incremental kv_seq_len for each token
+        kv_seq_len_per_seq = kv_seq_len.clone()
+        history_lens = kv_seq_len_per_seq - q_seqlens_cpu
+        kv_seq_len_expanded = torch.cat([
+            torch.arange(
+                int(history_len.item()) + 1,
+                int(final_len.item()) + 1,
+                dtype=kv_seq_len_per_seq.dtype,
+            )
+            for history_len, final_len in zip(history_lens, kv_seq_len_per_seq)
+        ])
+        return decode_attention(
+            query=query,
+            key_cache=key_cache,
+            value_cache=value_cache,
+            num_q_heads=num_q_heads,
+            num_kv_heads=num_kv_heads,
+            scale_value=scale_value,
+            block_table=block_table_expanded,
+            block_size=block_size,
+            kv_seq_len=kv_seq_len_expanded,
+            softmax_scale=softmax_scale,
+            attn_output=attn_output,
+        )
+
+    # Newer graph capture (aclgraph_use_torch_npu_update) or eager mode:
+    # Use single npu_fused_infer_attention_score call with BSH layout.
+    num_seqs = block_table.size(0)
+    q_seqlen_per_seq = query.size(0) // num_seqs
+    # Reshape to BSH: [num_seqs, q_seqlen_per_seq, num_q_heads * head_dim]
+    query = query.view(num_seqs, q_seqlen_per_seq, -1)
+
+    block_num = key_cache.size(0)
+    key_cache = key_cache.view(block_num, block_size, -1)
+    value_cache = value_cache.view(block_num, block_size, -1)
+
+    attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score(
+        query=query,
+        key=key_cache,
+        value=value_cache,
+        atten_mask=None,
+        block_table=block_table,
+        input_layout="BSH",
+        block_size=block_size,
+        actual_seq_lengths=actual_seq_lengths_q,
+        actual_seq_lengths_kv=kv_seq_len,
+        num_key_value_heads=num_kv_heads,
+        num_heads=num_q_heads,
+        scale=scale_value,
+        sparse_mode=3,
+    )
+    return attn_output
 
 
 @register_ops(vendor_ops_registry)
